@@ -304,8 +304,7 @@ def mockup():
 # ─────────────────────────────────────────────
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup"})
-
+return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V4"})
 
 # ═════════════════════════════════════════════
 # V3/V4 — LAYERS REPORT helpers

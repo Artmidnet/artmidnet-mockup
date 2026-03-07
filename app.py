@@ -1,14 +1,18 @@
 """
-Artmidnet Mockup Server
------------------------
-Flask API that replaces a painting inside a room frame image.
-Supports two modes:
-  - stretch: scales the painting to fit the existing frame exactly
-  - adapt:   resizes the frame to match the painting's aspect ratio
-              while preserving frame thickness and shadow
+Artmidnet Mockup Server — app.py V3
+------------------------------------
+V1: Basic mockup generation (stretch + adapt modes)
+V2: CORS support, health check endpoint
+V3: Added /layers-report endpoint — generates a DOCX report
+    from Wix page element tree data sent from Velo
+
+Endpoints:
+  POST /mockup          — generates room mockup image (existing)
+  GET  /health          — health check (existing)
+  POST /layers-report   — generates Layers Schema DOCX report (NEW in V3)
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import requests
 import numpy as np
@@ -16,8 +20,18 @@ from PIL import Image
 import io
 import base64
 
+# ── V3: ייבוא ספריות לייצור DOCX ──────────────────────────
+import datetime
+from docx import Document as DocxDocument
+from docx.shared import Pt, RGBColor, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+# ────────────────────────────────────────────────────────────
+
 app = Flask(__name__)
 CORS(app)  # Allow requests from Wix
+
 
 # ─────────────────────────────────────────────
 # Helper: download image from URL → PIL Image
@@ -82,7 +96,6 @@ def detect_inner_canvas(
 ) -> tuple:
     left_o, top_o, right_o, bottom_o = outer
 
-    # Scan from each edge inward until pixels become bright
     inner_top = top_o
     for y in range(top_o, bottom_o):
         if np.mean(arr[y, left_o:right_o]) > bright_threshold:
@@ -126,7 +139,6 @@ def extract_shadow(img_arr: np.ndarray, outer: tuple, thickness: int = 8) -> dic
 # ─────────────────────────────────────────────
 def sample_wall_color(img_arr: np.ndarray, outer: tuple, margin: int = 20) -> tuple:
     l, t, r, b = outer
-    # Sample from a small patch above the frame
     y0 = max(0, t - margin)
     y1 = t
     x0 = l + (r - l) // 3
@@ -140,8 +152,6 @@ def sample_wall_color(img_arr: np.ndarray, outer: tuple, margin: int = 20) -> tu
 
 # ─────────────────────────────────────────────
 # MODE 1: STRETCH
-# Scales the painting to fit exactly inside the
-# detected inner canvas area
 # ─────────────────────────────────────────────
 def apply_stretch(room_img: Image.Image, painting_img: Image.Image) -> Image.Image:
     arr = np.array(room_img)
@@ -155,12 +165,10 @@ def apply_stretch(room_img: Image.Image, painting_img: Image.Image) -> Image.Ima
     if canvas_w <= 0 or canvas_h <= 0:
         raise ValueError("Could not detect inner canvas area")
 
-    # Resize painting to canvas dimensions
     painting_resized = painting_img.resize(
         (canvas_w, canvas_h), Image.LANCZOS
     ).convert("RGBA")
 
-    # Paste onto room image
     result = room_img.copy().convert("RGBA")
     result.paste(painting_resized, (il, it), painting_resized)
 
@@ -169,8 +177,6 @@ def apply_stretch(room_img: Image.Image, painting_img: Image.Image) -> Image.Ima
 
 # ─────────────────────────────────────────────
 # MODE 2: ADAPT
-# Resizes the frame to match painting's aspect
-# ratio; rebuilds frame + shadow around painting
 # ─────────────────────────────────────────────
 def apply_adapt(room_img: Image.Image, painting_img: Image.Image) -> Image.Image:
     arr = np.array(room_img.convert("RGBA"))
@@ -180,33 +186,26 @@ def apply_adapt(room_img: Image.Image, painting_img: Image.Image) -> Image.Image
     lo, to, ro, bo = outer
     li, ti, ri, bi = inner
 
-    # Frame thickness on each side
     ft_left   = li - lo
     ft_top    = ti - to
     ft_right  = ro - ri
     ft_bottom = bo - bi
 
-    # Target canvas size = painting's natural size (scaled to fit original canvas width)
     orig_canvas_w = ri - li
     paint_w, paint_h = painting_img.size
     aspect = paint_h / paint_w
     new_canvas_w = orig_canvas_w
     new_canvas_h = int(new_canvas_w * aspect)
 
-    # New frame outer size
     new_frame_w = new_canvas_w + ft_left + ft_right
     new_frame_h = new_canvas_h + ft_top  + ft_bottom
 
-    # Extract shadow from original
     shadow = extract_shadow(arr, outer)
     wall_color = sample_wall_color(arr, outer)
 
-    # Build new frame as black rectangle
     frame_arr = np.zeros((new_frame_h, new_frame_w, 4), dtype=np.uint8)
-    # Fill with black (frame)
     frame_arr[:, :] = (0, 0, 0, 255)
 
-    # Fill inner canvas with painting
     painting_resized = painting_img.resize(
         (new_canvas_w, new_canvas_h), Image.LANCZOS
     ).convert("RGBA")
@@ -215,27 +214,18 @@ def apply_adapt(room_img: Image.Image, painting_img: Image.Image) -> Image.Image
 
     frame_img = Image.fromarray(frame_arr, "RGBA")
 
-    # Compose onto a wall-colored background
-    # Background size = same as original room image
     result = room_img.copy().convert("RGBA")
-
-    # Position: align top-left of new frame to same top-left as original outer frame
     paste_x = lo
     paste_y = to
 
-    # If new frame is smaller/larger, we need to patch the wall color around it
-    # First, fill the old frame area with wall color
     result_arr = np.array(result)
     result_arr[to:bo+1, lo:ro+1] = wall_color
     result = Image.fromarray(result_arr, "RGBA")
 
-    # Paste new frame
     result.paste(frame_img, (paste_x, paste_y), frame_img)
 
-    # Re-apply shadow strips (stretched to new frame width/height)
     result_arr2 = np.array(result)
 
-    # Left shadow
     sh_left = shadow["left"]
     if sh_left.size > 0:
         new_sh_left = np.array(
@@ -247,7 +237,6 @@ def apply_adapt(room_img: Image.Image, painting_img: Image.Image) -> Image.Image
         if x0 >= 0:
             result_arr2[paste_y:paste_y+new_frame_h, x0:paste_x] = new_sh_left
 
-    # Bottom shadow
     sh_bot = shadow["bottom"]
     if sh_bot.size > 0:
         new_sh_bot = np.array(
@@ -273,13 +262,7 @@ def image_to_base64(img: Image.Image, fmt: str = "JPEG") -> str:
 
 
 # ─────────────────────────────────────────────
-# API ENDPOINT: POST /mockup
-# Body (JSON):
-#   room_url    — URL of the room image with frame
-#   painting_url — URL of the painting image
-#   mode        — "stretch" | "adapt"
-# Response (JSON):
-#   image_base64 — base64-encoded JPEG of the result
+# API ENDPOINT: POST /mockup  (קיים מ-V1)
 # ─────────────────────────────────────────────
 @app.route("/mockup", methods=["POST"])
 def mockup():
@@ -318,13 +301,230 @@ def mockup():
 
 
 # ─────────────────────────────────────────────
-# Health check — Render uses this to verify
-# the service is alive
+# Health check  (קיים מ-V2)
 # ─────────────────────────────────────────────
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "artmidnet-mockup"})
 
 
+# ═════════════════════════════════════════════
+# V3 — LAYERS REPORT
+# ─────────────────────────────────────────────
+# פונקציות עזר לבניית ה-DOCX
+# ═════════════════════════════════════════════
+
+# מיפוי צבעים לפי סוג אלמנט — לכותרות ולטקסט בטבלה
+TYPE_COLORS = {
+    'Section':       'C00000',   # אדום כהה
+    'Box':           '2E75B6',   # כחול
+    'Text':          '375623',   # ירוק כהה
+    'Button':        '7030A0',   # סגול
+    'Repeater':      'C55A11',   # כתום
+    'Image':         '006400',   # ירוק
+    'VectorImage':   '006400',   # ירוק
+    'Menu':          '595959',   # אפור
+    'MenuContainer': '595959',   # אפור
+}
+
+def get_type_color(element_type):
+    """מחזיר קוד צבע hex לפי סוג האלמנט"""
+    return TYPE_COLORS.get(element_type, '404040')
+
+def hex_to_rgb(hex_str):
+    """ממיר hex string ל-tuple של (R, G, B)"""
+    h = hex_str.lstrip('#')
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+def set_cell_bg(cell, hex_color):
+    """מגדיר צבע רקע לתא בטבלה"""
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'),   'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'),  hex_color)
+    tcPr.append(shd)
+
+def set_cell_font(cell, size_pt, color_hex, bold=False, indent_spaces=0):
+    """מגדיר פונט לתא — גודל, צבע, bold, ואינדנטציה"""
+    p = cell.paragraphs[0]
+    text = p.text
+    p.clear()
+    run = p.add_run((' ' * indent_spaces) + text if indent_spaces else text)
+    run.font.size       = Pt(size_pt)
+    run.font.bold       = bold
+    run.font.color.rgb  = RGBColor(*hex_to_rgb(color_hex))
+
+
+# ─────────────────────────────────────────────
+# API ENDPOINT: POST /layers-report  (חדש ב-V3)
+#
+# Body (JSON):
+#   page_name — שם הדף ב-Wix (למשל "Z_LayersSchema")
+#   elements  — מערך של אובייקטים:
+#               { id, type, depth, parent }
+#
+# Response:
+#   קובץ DOCX להורדה ישירה
+# ─────────────────────────────────────────────
+@app.route("/layers-report", methods=["POST"])
+def layers_report():
+    try:
+        data      = request.get_json(force=True)
+        page_name = data.get("page_name", "Unknown Page")
+        elements  = data.get("elements", [])
+
+        if not elements:
+            return jsonify({"error": "elements array is required"}), 400
+
+        doc = DocxDocument()
+
+        # הגדרת שוליים לדף
+        section = doc.sections[0]
+        section.top_margin    = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin   = Inches(1)
+        section.right_margin  = Inches(1)
+
+        # ── כותרת ראשית ──────────────────────────
+        title = doc.add_paragraph()
+        title.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        run = title.add_run('Artmidnet — Layers Report')
+        run.bold           = True
+        run.font.size      = Pt(20)
+        run.font.color.rgb = RGBColor(0x1F, 0x38, 0x64)
+
+        # שורת תת-כותרת: שם דף + תאריך + מספר אלמנטים
+        sub = doc.add_paragraph()
+        run2 = sub.add_run(
+            f'Page: {page_name}  |  '
+            f'{datetime.date.today().strftime("%d/%m/%Y")}  |  '
+            f'{len(elements)} elements'
+        )
+        run2.font.size      = Pt(10)
+        run2.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+        run2.italic         = True
+
+        doc.add_paragraph()  # רווח
+
+        # ── סיכום לפי סוג ────────────────────────
+        h2 = doc.add_paragraph()
+        r  = h2.add_run('Summary by Type')
+        r.bold           = True
+        r.font.size      = Pt(13)
+        r.font.color.rgb = RGBColor(0x2E, 0x75, 0xB6)
+
+        # ספירת כמות אלמנטים לכל סוג
+        type_counts = {}
+        for el in elements:
+            t = el.get('type', 'Unknown')
+            type_counts[t] = type_counts.get(t, 0) + 1
+
+        # בניית טבלת סיכום
+        summary_table = doc.add_table(rows=1, cols=2)
+        summary_table.style = 'Table Grid'
+
+        # כותרת הטבלה — רקע כהה + טקסט לבן
+        hdr = summary_table.rows[0].cells
+        for i, txt in enumerate(['Type', 'Count']):
+            hdr[i].text = txt
+            set_cell_bg(hdr[i], '1F3864')
+            run = hdr[i].paragraphs[0].runs[0]
+            run.bold           = True
+            run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+            run.font.size      = Pt(10)
+
+        # שורה לכל סוג — ממוין מהנפוץ לנדיר
+        for t, count in sorted(type_counts.items(), key=lambda x: -x[1]):
+            row   = summary_table.add_row().cells
+            color = get_type_color(t)
+            rgb   = hex_to_rgb(color)
+            row[0].text = t
+            row[1].text = str(count)
+            for cell in row:
+                set_cell_bg(cell, 'F8F8F8')
+                p = cell.paragraphs[0]
+                if p.runs:
+                    p.runs[0].font.color.rgb = RGBColor(*rgb)
+                    p.runs[0].font.size      = Pt(10)
+
+        doc.add_paragraph()  # רווח
+
+        # ── טבלה מלאה ────────────────────────────
+        h2b = doc.add_paragraph()
+        r2  = h2b.add_run('Full Elements Tree')
+        r2.bold           = True
+        r2.font.size      = Pt(13)
+        r2.font.color.rgb = RGBColor(0x2E, 0x75, 0xB6)
+
+        note = doc.add_paragraph()
+        rn = note.add_run('ID is indented by depth level. Depth = hierarchy level in Wix Layers.')
+        rn.font.size      = Pt(9)
+        rn.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+        rn.italic         = True
+
+        doc.add_paragraph()
+
+        # בניית טבלה ראשית עם 4 עמודות
+        main_table = doc.add_table(rows=1, cols=4)
+        main_table.style = 'Table Grid'
+
+        # כותרת הטבלה
+        hdr2 = main_table.rows[0].cells
+        for i, txt in enumerate(['ID', 'Type', 'Parent', 'Depth']):
+            hdr2[i].text = txt
+            set_cell_bg(hdr2[i], '1F3864')
+            run = hdr2[i].paragraphs[0].runs[0]
+            run.bold           = True
+            run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+            run.font.size      = Pt(10)
+
+        # שורה לכל אלמנט
+        for el in elements:
+            el_id     = el.get('id',     '')
+            el_type   = el.get('type',   '')
+            el_parent = el.get('parent') or '—'
+            el_depth  = int(el.get('depth', 1))
+            color     = get_type_color(el_type)
+            rgb       = hex_to_rgb(color)
+
+            # אינדנטציה חזותית לפי עומק — רווחים לפני ה-ID
+            indent  = '    ' * (el_depth - 1)
+            row_bg  = 'EBF3FB' if el_depth % 2 == 0 else 'FFFFFF'
+
+            row = main_table.add_row().cells
+            row[0].text = indent + '#' + el_id
+            row[1].text = el_type
+            row[2].text = ('#' + el_parent) if el_parent != '—' else '—'
+            row[3].text = str(el_depth)
+
+            for cell in row:
+                set_cell_bg(cell, row_bg)
+                p = cell.paragraphs[0]
+                if p.runs:
+                    p.runs[0].font.size      = Pt(9)
+                    p.runs[0].font.color.rgb = RGBColor(*rgb)
+
+        # שמירת המסמך ל-buffer בזיכרון ושליחה כ-attachment
+        buf = io.BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+
+        filename = f'Layers_Report_{page_name}_{datetime.date.today()}.docx'
+        return send_file(
+            buf,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
+
+    except Exception as e:
+        return jsonify({"error": f"Internal error: {str(e)}"}), 500
+
+
+# ─────────────────────────────────────────────
+# Run
+# ─────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)

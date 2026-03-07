@@ -1,15 +1,16 @@
 """
-Artmidnet Mockup Server — app.py V3
+Artmidnet Mockup Server — app.py V4
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
-V3: Added /layers-report endpoint — generates a DOCX report
-    from Wix page element tree data sent from Velo
+V3: Added /layers-report endpoint — generates DOCX, returns file directly
+V4: /layers-report now returns base64 JSON instead of file download
+    (required for Wix Backend .jsw to receive the response)
 
 Endpoints:
-  POST /mockup          — generates room mockup image (existing)
-  GET  /health          — health check (existing)
-  POST /layers-report   — generates Layers Schema DOCX report (NEW in V3)
+  POST /mockup          — generates room mockup image (unchanged)
+  GET  /health          — health check (unchanged)
+  POST /layers-report   — generates Layers Schema DOCX, returns base64 JSON (changed in V4)
 """
 
 from flask import Flask, request, jsonify, send_file
@@ -20,7 +21,7 @@ from PIL import Image
 import io
 import base64
 
-# ── V3: ייבוא ספריות לייצור DOCX ──────────────────────────
+# ── V3+: ייבוא ספריות לייצור DOCX ──────────────────────────
 import datetime
 from docx import Document as DocxDocument
 from docx.shared import Pt, RGBColor, Inches
@@ -85,8 +86,6 @@ def detect_outer_frame(img: Image.Image, dark_threshold: int = 60) -> tuple:
 
 # ─────────────────────────────────────────────
 # Helper: detect inner canvas area
-# Scans inward from the outer frame edges
-# looking for a brighter region
 # ─────────────────────────────────────────────
 def detect_inner_canvas(
     arr: np.ndarray,
@@ -124,7 +123,7 @@ def detect_inner_canvas(
 
 
 # ─────────────────────────────────────────────
-# Helper: extract shadow strips from left + bottom
+# Helper: extract shadow strips
 # ─────────────────────────────────────────────
 def extract_shadow(img_arr: np.ndarray, outer: tuple, thickness: int = 8) -> dict:
     l, t, r, b = outer
@@ -135,7 +134,7 @@ def extract_shadow(img_arr: np.ndarray, outer: tuple, thickness: int = 8) -> dic
 
 
 # ─────────────────────────────────────────────
-# Helper: sample wall color near the frame edges
+# Helper: sample wall color
 # ─────────────────────────────────────────────
 def sample_wall_color(img_arr: np.ndarray, outer: tuple, margin: int = 20) -> tuple:
     l, t, r, b = outer
@@ -262,7 +261,7 @@ def image_to_base64(img: Image.Image, fmt: str = "JPEG") -> str:
 
 
 # ─────────────────────────────────────────────
-# API ENDPOINT: POST /mockup  (קיים מ-V1)
+# API ENDPOINT: POST /mockup  (unchanged)
 # ─────────────────────────────────────────────
 @app.route("/mockup", methods=["POST"])
 def mockup():
@@ -301,7 +300,7 @@ def mockup():
 
 
 # ─────────────────────────────────────────────
-# Health check  (קיים מ-V2)
+# Health check  (unchanged)
 # ─────────────────────────────────────────────
 @app.route("/health", methods=["GET"])
 def health():
@@ -309,35 +308,29 @@ def health():
 
 
 # ═════════════════════════════════════════════
-# V3 — LAYERS REPORT
-# ─────────────────────────────────────────────
-# פונקציות עזר לבניית ה-DOCX
+# V3/V4 — LAYERS REPORT helpers
 # ═════════════════════════════════════════════
 
-# מיפוי צבעים לפי סוג אלמנט — לכותרות ולטקסט בטבלה
 TYPE_COLORS = {
-    'Section':       'C00000',   # אדום כהה
-    'Box':           '2E75B6',   # כחול
-    'Text':          '375623',   # ירוק כהה
-    'Button':        '7030A0',   # סגול
-    'Repeater':      'C55A11',   # כתום
-    'Image':         '006400',   # ירוק
-    'VectorImage':   '006400',   # ירוק
-    'Menu':          '595959',   # אפור
-    'MenuContainer': '595959',   # אפור
+    'Section':       'C00000',
+    'Box':           '2E75B6',
+    'Text':          '375623',
+    'Button':        '7030A0',
+    'Repeater':      'C55A11',
+    'Image':         '006400',
+    'VectorImage':   '006400',
+    'Menu':          '595959',
+    'MenuContainer': '595959',
 }
 
 def get_type_color(element_type):
-    """מחזיר קוד צבע hex לפי סוג האלמנט"""
     return TYPE_COLORS.get(element_type, '404040')
 
 def hex_to_rgb(hex_str):
-    """ממיר hex string ל-tuple של (R, G, B)"""
     h = hex_str.lstrip('#')
     return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
 def set_cell_bg(cell, hex_color):
-    """מגדיר צבע רקע לתא בטבלה"""
     tc = cell._tc
     tcPr = tc.get_or_add_tcPr()
     shd = OxmlElement('w:shd')
@@ -346,27 +339,16 @@ def set_cell_bg(cell, hex_color):
     shd.set(qn('w:fill'),  hex_color)
     tcPr.append(shd)
 
-def set_cell_font(cell, size_pt, color_hex, bold=False, indent_spaces=0):
-    """מגדיר פונט לתא — גודל, צבע, bold, ואינדנטציה"""
-    p = cell.paragraphs[0]
-    text = p.text
-    p.clear()
-    run = p.add_run((' ' * indent_spaces) + text if indent_spaces else text)
-    run.font.size       = Pt(size_pt)
-    run.font.bold       = bold
-    run.font.color.rgb  = RGBColor(*hex_to_rgb(color_hex))
-
 
 # ─────────────────────────────────────────────
-# API ENDPOINT: POST /layers-report  (חדש ב-V3)
+# API ENDPOINT: POST /layers-report  (V4)
 #
-# Body (JSON):
-#   page_name — שם הדף ב-Wix (למשל "Z_LayersSchema")
-#   elements  — מערך של אובייקטים:
-#               { id, type, depth, parent }
+# שינוי מ-V3:
+#   V3 החזיר קובץ DOCX להורדה ישירה (send_file)
+#   V4 מחזיר JSON עם base64 — כדי שWix Backend יוכל לקבל את התשובה
 #
-# Response:
-#   קובץ DOCX להורדה ישירה
+# Response (JSON):
+#   { "status": "ok", "base64": "...", "filename": "..." }
 # ─────────────────────────────────────────────
 @app.route("/layers-report", methods=["POST"])
 def layers_report():
@@ -380,14 +362,13 @@ def layers_report():
 
         doc = DocxDocument()
 
-        # הגדרת שוליים לדף
         section = doc.sections[0]
         section.top_margin    = Inches(1)
         section.bottom_margin = Inches(1)
         section.left_margin   = Inches(1)
         section.right_margin  = Inches(1)
 
-        # ── כותרת ראשית ──────────────────────────
+        # כותרת ראשית
         title = doc.add_paragraph()
         title.alignment = WD_ALIGN_PARAGRAPH.LEFT
         run = title.add_run('Artmidnet — Layers Report')
@@ -395,7 +376,6 @@ def layers_report():
         run.font.size      = Pt(20)
         run.font.color.rgb = RGBColor(0x1F, 0x38, 0x64)
 
-        # שורת תת-כותרת: שם דף + תאריך + מספר אלמנטים
         sub = doc.add_paragraph()
         run2 = sub.add_run(
             f'Page: {page_name}  |  '
@@ -406,26 +386,22 @@ def layers_report():
         run2.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
         run2.italic         = True
 
-        doc.add_paragraph()  # רווח
+        doc.add_paragraph()
 
-        # ── סיכום לפי סוג ────────────────────────
+        # סיכום לפי סוג
         h2 = doc.add_paragraph()
         r  = h2.add_run('Summary by Type')
         r.bold           = True
         r.font.size      = Pt(13)
         r.font.color.rgb = RGBColor(0x2E, 0x75, 0xB6)
 
-        # ספירת כמות אלמנטים לכל סוג
         type_counts = {}
         for el in elements:
             t = el.get('type', 'Unknown')
             type_counts[t] = type_counts.get(t, 0) + 1
 
-        # בניית טבלת סיכום
         summary_table = doc.add_table(rows=1, cols=2)
         summary_table.style = 'Table Grid'
-
-        # כותרת הטבלה — רקע כהה + טקסט לבן
         hdr = summary_table.rows[0].cells
         for i, txt in enumerate(['Type', 'Count']):
             hdr[i].text = txt
@@ -435,7 +411,6 @@ def layers_report():
             run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
             run.font.size      = Pt(10)
 
-        # שורה לכל סוג — ממוין מהנפוץ לנדיר
         for t, count in sorted(type_counts.items(), key=lambda x: -x[1]):
             row   = summary_table.add_row().cells
             color = get_type_color(t)
@@ -449,9 +424,9 @@ def layers_report():
                     p.runs[0].font.color.rgb = RGBColor(*rgb)
                     p.runs[0].font.size      = Pt(10)
 
-        doc.add_paragraph()  # רווח
+        doc.add_paragraph()
 
-        # ── טבלה מלאה ────────────────────────────
+        # טבלה מלאה
         h2b = doc.add_paragraph()
         r2  = h2b.add_run('Full Elements Tree')
         r2.bold           = True
@@ -466,11 +441,8 @@ def layers_report():
 
         doc.add_paragraph()
 
-        # בניית טבלה ראשית עם 4 עמודות
         main_table = doc.add_table(rows=1, cols=4)
         main_table.style = 'Table Grid'
-
-        # כותרת הטבלה
         hdr2 = main_table.rows[0].cells
         for i, txt in enumerate(['ID', 'Type', 'Parent', 'Depth']):
             hdr2[i].text = txt
@@ -480,7 +452,6 @@ def layers_report():
             run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
             run.font.size      = Pt(10)
 
-        # שורה לכל אלמנט
         for el in elements:
             el_id     = el.get('id',     '')
             el_type   = el.get('type',   '')
@@ -488,10 +459,8 @@ def layers_report():
             el_depth  = int(el.get('depth', 1))
             color     = get_type_color(el_type)
             rgb       = hex_to_rgb(color)
-
-            # אינדנטציה חזותית לפי עומק — רווחים לפני ה-ID
-            indent  = '    ' * (el_depth - 1)
-            row_bg  = 'EBF3FB' if el_depth % 2 == 0 else 'FFFFFF'
+            indent    = '    ' * (el_depth - 1)
+            row_bg    = 'EBF3FB' if el_depth % 2 == 0 else 'FFFFFF'
 
             row = main_table.add_row().cells
             row[0].text = indent + '#' + el_id
@@ -506,18 +475,21 @@ def layers_report():
                     p.runs[0].font.size      = Pt(9)
                     p.runs[0].font.color.rgb = RGBColor(*rgb)
 
-        # שמירת המסמך ל-buffer בזיכרון ושליחה כ-attachment
+        # ── V4: שמירה ל-buffer והמרה ל-base64 ──────────────
+        # בV3 השתמשנו ב-send_file — זה לא עובד עם Wix Backend
+        # בV4 מחזירים JSON עם base64 שWix Backend יכול לקבל
         buf = io.BytesIO()
         doc.save(buf)
         buf.seek(0)
+        docx_base64 = base64.b64encode(buf.read()).decode("utf-8")
+        filename    = f'Layers_Report_{page_name}_{datetime.date.today()}.docx'
 
-        filename = f'Layers_Report_{page_name}_{datetime.date.today()}.docx'
-        return send_file(
-            buf,
-            as_attachment=True,
-            download_name=filename,
-            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        )
+        return jsonify({
+            "status":   "ok",
+            "base64":   docx_base64,
+            "filename": filename
+        })
+        # ────────────────────────────────────────────────────
 
     except Exception as e:
         return jsonify({"error": f"Internal error: {str(e)}"}), 500

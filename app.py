@@ -1,27 +1,29 @@
 """
-Artmidnet Mockup Server — app.py V5
+Artmidnet Mockup Server — app.py V6
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
 V3: Added /layers-report endpoint — generates DOCX, returns file directly
 V4: /layers-report now returns base64 JSON instead of file download
 V5: Page name displayed prominently as main title in report header
+V6: Added /cms-report endpoint — generates CMS Schema DOCX, returns base64 JSON
 
 Endpoints:
   POST /mockup          — generates room mockup image (unchanged)
   GET  /health          — health check (unchanged)
-  POST /layers-report   — generates Layers Schema DOCX, returns base64 JSON
+  POST /layers-report   — generates Layers Schema DOCX, returns base64 JSON (unchanged)
+  POST /cms-report      — generates CMS Schema DOCX, returns base64 JSON (new in V6)
 """
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import numpy as np
 from PIL import Image
 import io
 import base64
-
 import datetime
+
 from docx import Document as DocxDocument
 from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -41,70 +43,42 @@ def load_image_from_url(url: str) -> Image.Image:
     return Image.open(io.BytesIO(response.content)).convert("RGBA")
 
 
-def detect_outer_frame(img: Image.Image, dark_threshold: int = 60) -> tuple:
+def detect_outer_frame(img, dark_threshold=60):
     arr = np.array(img.convert("RGB"))
     h, w = arr.shape[:2]
 
-    def is_dark_row(row_pixels):
-        return np.mean(row_pixels) < dark_threshold
-
-    def is_dark_col(col_pixels):
-        return np.mean(col_pixels) < dark_threshold
+    def is_dark_row(row_pixels): return np.mean(row_pixels) < dark_threshold
+    def is_dark_col(col_pixels): return np.mean(col_pixels) < dark_threshold
 
     top = 0
     for y in range(h):
-        if is_dark_row(arr[y]):
-            top = y
-            break
-
+        if is_dark_row(arr[y]): top = y; break
     bottom = h - 1
     for y in range(h - 1, -1, -1):
-        if is_dark_row(arr[y]):
-            bottom = y
-            break
-
+        if is_dark_row(arr[y]): bottom = y; break
     left = 0
     for x in range(w):
-        if is_dark_col(arr[:, x]):
-            left = x
-            break
-
+        if is_dark_col(arr[:, x]): left = x; break
     right = w - 1
     for x in range(w - 1, -1, -1):
-        if is_dark_col(arr[:, x]):
-            right = x
-            break
-
+        if is_dark_col(arr[:, x]): right = x; break
     return left, top, right, bottom
 
 
 def detect_inner_canvas(arr, outer, bright_threshold=100, step=1):
     left_o, top_o, right_o, bottom_o = outer
-
     inner_top = top_o
     for y in range(top_o, bottom_o):
-        if np.mean(arr[y, left_o:right_o]) > bright_threshold:
-            inner_top = y
-            break
-
+        if np.mean(arr[y, left_o:right_o]) > bright_threshold: inner_top = y; break
     inner_bottom = bottom_o
     for y in range(bottom_o, top_o, -1):
-        if np.mean(arr[y, left_o:right_o]) > bright_threshold:
-            inner_bottom = y
-            break
-
+        if np.mean(arr[y, left_o:right_o]) > bright_threshold: inner_bottom = y; break
     inner_left = left_o
     for x in range(left_o, right_o):
-        if np.mean(arr[top_o:bottom_o, x]) > bright_threshold:
-            inner_left = x
-            break
-
+        if np.mean(arr[top_o:bottom_o, x]) > bright_threshold: inner_left = x; break
     inner_right = right_o
     for x in range(right_o, left_o, -1):
-        if np.mean(arr[top_o:bottom_o, x]) > bright_threshold:
-            inner_right = x
-            break
-
+        if np.mean(arr[top_o:bottom_o, x]) > bright_threshold: inner_right = x; break
     return inner_left, inner_top, inner_right, inner_bottom
 
 
@@ -118,13 +92,10 @@ def extract_shadow(img_arr, outer, thickness=8):
 
 def sample_wall_color(img_arr, outer, margin=20):
     l, t, r, b = outer
-    y0 = max(0, t - margin)
-    y1 = t
-    x0 = l + (r - l) // 3
-    x1 = r - (r - l) // 3
+    y0 = max(0, t - margin); y1 = t
+    x0 = l + (r - l) // 3;   x1 = r - (r - l) // 3
     patch = img_arr[y0:y1, x0:x1]
-    if patch.size == 0:
-        return (200, 200, 200, 255)
+    if patch.size == 0: return (200, 200, 200, 255)
     mean = patch.mean(axis=(0, 1))
     return tuple(int(v) for v in mean[:4])
 
@@ -134,10 +105,8 @@ def apply_stretch(room_img, painting_img):
     outer = detect_outer_frame(room_img)
     inner = detect_inner_canvas(arr, outer)
     il, it, ir, ib = inner
-    canvas_w = ir - il
-    canvas_h = ib - it
-    if canvas_w <= 0 or canvas_h <= 0:
-        raise ValueError("Could not detect inner canvas area")
+    canvas_w = ir - il; canvas_h = ib - it
+    if canvas_w <= 0 or canvas_h <= 0: raise ValueError("Could not detect inner canvas area")
     painting_resized = painting_img.resize((canvas_w, canvas_h), Image.LANCZOS).convert("RGBA")
     result = room_img.copy().convert("RGBA")
     result.paste(painting_resized, (il, it), painting_resized)
@@ -148,17 +117,12 @@ def apply_adapt(room_img, painting_img):
     arr = np.array(room_img.convert("RGBA"))
     outer = detect_outer_frame(room_img)
     inner = detect_inner_canvas(arr, outer)
-    lo, to, ro, bo = outer
-    li, ti, ri, bi = inner
-    ft_left   = li - lo
-    ft_top    = ti - to
-    ft_right  = ro - ri
-    ft_bottom = bo - bi
+    lo, to, ro, bo = outer; li, ti, ri, bi = inner
+    ft_left = li-lo; ft_top = ti-to; ft_right = ro-ri; ft_bottom = bo-bi
     orig_canvas_w = ri - li
     paint_w, paint_h = painting_img.size
     aspect = paint_h / paint_w
-    new_canvas_w = orig_canvas_w
-    new_canvas_h = int(new_canvas_w * aspect)
+    new_canvas_w = orig_canvas_w; new_canvas_h = int(new_canvas_w * aspect)
     new_frame_w = new_canvas_w + ft_left + ft_right
     new_frame_h = new_canvas_h + ft_top  + ft_bottom
     shadow = extract_shadow(arr, outer)
@@ -179,8 +143,7 @@ def apply_adapt(room_img, painting_img):
     if sh_left.size > 0:
         new_sh_left = np.array(Image.fromarray(sh_left).resize((sh_left.shape[1], new_frame_h), Image.LANCZOS))
         x0 = lo - sh_left.shape[1]
-        if x0 >= 0:
-            result_arr2[to:to+new_frame_h, x0:lo] = new_sh_left
+        if x0 >= 0: result_arr2[to:to+new_frame_h, x0:lo] = new_sh_left
     sh_bot = shadow["bottom"]
     if sh_bot.size > 0:
         new_sh_bot = np.array(Image.fromarray(sh_bot).resize((new_frame_w, sh_bot.shape[0]), Image.LANCZOS))
@@ -196,6 +159,11 @@ def image_to_base64(img, fmt="JPEG"):
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
 
+
+# ─────────────────────────────────────────────
+# Endpoints: /mockup, /health, /layers-report
+# (unchanged from V5)
+# ─────────────────────────────────────────────
 
 @app.route("/mockup", methods=["POST"])
 def mockup():
@@ -222,23 +190,17 @@ def mockup():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V5"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V6"})
 
 
-# ═════════════════════════════════════════════
-# LAYERS REPORT helpers
-# ═════════════════════════════════════════════
+# ─────────────────────────────────────────────
+# Layers Report helpers (unchanged from V5)
+# ─────────────────────────────────────────────
 
 TYPE_COLORS = {
-    'Section':       'C00000',
-    'Box':           '2E75B6',
-    'Text':          '375623',
-    'Button':        '7030A0',
-    'Repeater':      'C55A11',
-    'Image':         '006400',
-    'VectorImage':   '006400',
-    'Menu':          '595959',
-    'MenuContainer': '595959',
+    'Section': 'C00000', 'Box': '2E75B6', 'Text': '375623',
+    'Button': '7030A0', 'Repeater': 'C55A11', 'Image': '006400',
+    'VectorImage': '006400', 'Menu': '595959', 'MenuContainer': '595959',
 }
 
 def get_type_color(element_type):
@@ -252,83 +214,52 @@ def set_cell_bg(cell, hex_color):
     tc = cell._tc
     tcPr = tc.get_or_add_tcPr()
     shd = OxmlElement('w:shd')
-    shd.set(qn('w:val'),   'clear')
+    shd.set(qn('w:val'), 'clear')
     shd.set(qn('w:color'), 'auto')
-    shd.set(qn('w:fill'),  hex_color)
+    shd.set(qn('w:fill'), hex_color)
     tcPr.append(shd)
 
 
-# ─────────────────────────────────────────────
-# API ENDPOINT: POST /layers-report  (V5)
-#
-# V5 change: page name is now displayed prominently
-#            as the main title at the top of the report
-# ─────────────────────────────────────────────
 @app.route("/layers-report", methods=["POST"])
 def layers_report():
     try:
         data      = request.get_json(force=True)
         page_name = data.get("page_name", "Unknown Page")
         elements  = data.get("elements", [])
-
         if not elements:
             return jsonify({"error": "elements array is required"}), 400
 
         doc = DocxDocument()
-
         section = doc.sections[0]
-        section.top_margin    = Inches(1)
-        section.bottom_margin = Inches(1)
-        section.left_margin   = Inches(1)
-        section.right_margin  = Inches(1)
+        section.top_margin = section.bottom_margin = Inches(1)
+        section.left_margin = section.right_margin = Inches(1)
 
-        # ── V5: כותרת ראשית — שם הדף בולט ──────────────────
         site_label = doc.add_paragraph()
-        site_label.alignment = WD_ALIGN_PARAGRAPH.LEFT
         r0 = site_label.add_run('Artmidnet — Layers Report')
-        r0.font.size      = Pt(11)
-        r0.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
-        r0.italic         = True
+        r0.font.size = Pt(11); r0.font.color.rgb = RGBColor(0x88,0x88,0x88); r0.italic = True
 
         page_title = doc.add_paragraph()
-        page_title.alignment = WD_ALIGN_PARAGRAPH.LEFT
         page_title.paragraph_format.space_before = Pt(4)
         page_title.paragraph_format.space_after  = Pt(2)
         r1 = page_title.add_run(f'Page: {page_name}')
-        r1.bold           = True
-        r1.font.size      = Pt(26)
-        r1.font.color.rgb = RGBColor(0x1F, 0x38, 0x64)
-
-        # קו הפרדה מתחת לכותרת
+        r1.bold = True; r1.font.size = Pt(26); r1.font.color.rgb = RGBColor(0x1F,0x38,0x64)
         pPr = page_title._p.get_or_add_pPr()
         pBdr = OxmlElement('w:pBdr')
         bottom = OxmlElement('w:bottom')
-        bottom.set(qn('w:val'),   'single')
-        bottom.set(qn('w:sz'),    '6')
-        bottom.set(qn('w:space'), '1')
-        bottom.set(qn('w:color'), '1F3864')
-        pBdr.append(bottom)
-        pPr.append(pBdr)
-        # ────────────────────────────────────────────────────
+        bottom.set(qn('w:val'), 'single'); bottom.set(qn('w:sz'), '6')
+        bottom.set(qn('w:space'), '1'); bottom.set(qn('w:color'), '1F3864')
+        pBdr.append(bottom); pPr.append(pBdr)
 
         meta = doc.add_paragraph()
         meta.paragraph_format.space_before = Pt(6)
-        r2 = meta.add_run(
-            f'Date: {datetime.date.today().strftime("%d/%m/%Y")}   |   '
-            f'Total elements: {len(elements)}'
-        )
-        r2.font.size      = Pt(10)
-        r2.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
-        r2.italic         = True
+        r2 = meta.add_run(f'Date: {datetime.date.today().strftime("%d/%m/%Y")}   |   Total elements: {len(elements)}')
+        r2.font.size = Pt(10); r2.font.color.rgb = RGBColor(0x88,0x88,0x88); r2.italic = True
 
         doc.add_paragraph()
 
-        # ── Summary by Type ──────────────────────────────────
         h2 = doc.add_paragraph()
-        r  = h2.add_run('Summary by Type')
-        r.bold           = True
-        r.font.size      = Pt(13)
-        r.font.color.rgb = RGBColor(0x2E, 0x75, 0xB6)
+        r = h2.add_run('Summary by Type')
+        r.bold = True; r.font.size = Pt(13); r.font.color.rgb = RGBColor(0x2E,0x75,0xB6)
 
         type_counts = {}
         for el in elements:
@@ -339,88 +270,215 @@ def layers_report():
         summary_table.style = 'Table Grid'
         hdr = summary_table.rows[0].cells
         for i, txt in enumerate(['Type', 'Count']):
-            hdr[i].text = txt
-            set_cell_bg(hdr[i], '1F3864')
+            hdr[i].text = txt; set_cell_bg(hdr[i], '1F3864')
             run = hdr[i].paragraphs[0].runs[0]
-            run.bold           = True
-            run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-            run.font.size      = Pt(10)
+            run.bold = True; run.font.color.rgb = RGBColor(0xFF,0xFF,0xFF); run.font.size = Pt(10)
 
         for t, count in sorted(type_counts.items(), key=lambda x: -x[1]):
-            row   = summary_table.add_row().cells
-            color = get_type_color(t)
-            rgb   = hex_to_rgb(color)
-            row[0].text = t
-            row[1].text = str(count)
+            row = summary_table.add_row().cells
+            color = get_type_color(t); rgb = hex_to_rgb(color)
+            row[0].text = t; row[1].text = str(count)
             for cell in row:
                 set_cell_bg(cell, 'F8F8F8')
                 p = cell.paragraphs[0]
                 if p.runs:
-                    p.runs[0].font.color.rgb = RGBColor(*rgb)
-                    p.runs[0].font.size      = Pt(10)
+                    p.runs[0].font.color.rgb = RGBColor(*rgb); p.runs[0].font.size = Pt(10)
 
         doc.add_paragraph()
-
-        # ── Full Elements Tree ───────────────────────────────
         h2b = doc.add_paragraph()
         r2b = h2b.add_run('Full Elements Tree')
-        r2b.bold           = True
-        r2b.font.size      = Pt(13)
-        r2b.font.color.rgb = RGBColor(0x2E, 0x75, 0xB6)
+        r2b.bold = True; r2b.font.size = Pt(13); r2b.font.color.rgb = RGBColor(0x2E,0x75,0xB6)
 
         note = doc.add_paragraph()
         rn = note.add_run('Depth column represents hierarchy level. ID is indented accordingly.')
-        rn.font.size      = Pt(9)
-        rn.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
-        rn.italic         = True
-
+        rn.font.size = Pt(9); rn.font.color.rgb = RGBColor(0x88,0x88,0x88); rn.italic = True
         doc.add_paragraph()
 
         main_table = doc.add_table(rows=1, cols=4)
         main_table.style = 'Table Grid'
         hdr2 = main_table.rows[0].cells
         for i, txt in enumerate(['ID', 'Type', 'Parent', 'Depth']):
-            hdr2[i].text = txt
-            set_cell_bg(hdr2[i], '1F3864')
+            hdr2[i].text = txt; set_cell_bg(hdr2[i], '1F3864')
             run = hdr2[i].paragraphs[0].runs[0]
-            run.bold           = True
-            run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-            run.font.size      = Pt(10)
+            run.bold = True; run.font.color.rgb = RGBColor(0xFF,0xFF,0xFF); run.font.size = Pt(10)
 
         for el in elements:
-            el_id     = el.get('id',     '')
-            el_type   = el.get('type',   '')
-            el_parent = el.get('parent') or '—'
-            el_depth  = int(el.get('depth', 1))
-            color     = get_type_color(el_type)
-            rgb       = hex_to_rgb(color)
-            indent    = '    ' * (el_depth - 1)
-            row_bg    = 'EBF3FB' if el_depth % 2 == 0 else 'FFFFFF'
-
+            el_id = el.get('id',''); el_type = el.get('type','')
+            el_parent = el.get('parent') or '—'; el_depth = int(el.get('depth', 1))
+            color = get_type_color(el_type); rgb = hex_to_rgb(color)
+            indent = '    ' * (el_depth - 1); row_bg = 'EBF3FB' if el_depth % 2 == 0 else 'FFFFFF'
             row = main_table.add_row().cells
-            row[0].text = indent + '#' + el_id
-            row[1].text = el_type
-            row[2].text = ('#' + el_parent) if el_parent != '—' else '—'
-            row[3].text = str(el_depth)
-
+            row[0].text = indent + '#' + el_id; row[1].text = el_type
+            row[2].text = ('#' + el_parent) if el_parent != '—' else '—'; row[3].text = str(el_depth)
             for cell in row:
                 set_cell_bg(cell, row_bg)
                 p = cell.paragraphs[0]
                 if p.runs:
-                    p.runs[0].font.size      = Pt(9)
-                    p.runs[0].font.color.rgb = RGBColor(*rgb)
+                    p.runs[0].font.size = Pt(9); p.runs[0].font.color.rgb = RGBColor(*rgb)
 
-        buf = io.BytesIO()
-        doc.save(buf)
-        buf.seek(0)
+        buf = io.BytesIO(); doc.save(buf); buf.seek(0)
         docx_base64 = base64.b64encode(buf.read()).decode("utf-8")
-        filename    = f'Layers_Report_{page_name}_{datetime.date.today()}.docx'
+        filename = f'Layers_Report_{page_name}_{datetime.date.today()}.docx'
+        return jsonify({"status": "ok", "base64": docx_base64, "filename": filename})
 
-        return jsonify({
-            "status":   "ok",
-            "base64":   docx_base64,
-            "filename": filename
-        })
+    except Exception as e:
+        return jsonify({"error": f"Internal error: {str(e)}"}), 500
+
+
+# ═════════════════════════════════════════════
+# V6 — CMS REPORT
+# ═════════════════════════════════════════════
+#
+# Request JSON:
+# {
+#   "collections": [
+#     {
+#       "collectionId": "Paintings",
+#       "displayName":  "Paintings",
+#       "fields": [
+#         { "key": "title", "displayName": "Title", "type": "TEXT", "systemField": false },
+#         ...
+#       ]
+#     },
+#     ...
+#   ]
+# }
+#
+# Response JSON:
+# { "status": "ok", "base64": "...", "filename": "..." }
+# ═════════════════════════════════════════════
+
+FIELD_TYPE_COLORS = {
+    'TEXT':          '1F3864',
+    'NUMBER':        '375623',
+    'BOOLEAN':       'C55A11',
+    'DATE':          '7030A0',
+    'IMAGE':         '006400',
+    'MEDIA_GALLERY': '006400',
+    'REFERENCE':     'C00000',
+    'ARRAY_STRING':  '2E75B6',
+    'ARRAY':         '2E75B6',
+    'OBJECT':        '595959',
+    'RICH_TEXT':     '404040',
+}
+
+def get_field_type_color(field_type):
+    return FIELD_TYPE_COLORS.get(field_type, '404040')
+
+
+@app.route("/cms-report", methods=["POST"])
+def cms_report():
+    try:
+        data        = request.get_json(force=True)
+        collections = data.get("collections", [])
+
+        if not collections:
+            return jsonify({"error": "collections array is required"}), 400
+
+        total_fields = sum(len(col.get('fields', [])) for col in collections)
+
+        doc = DocxDocument()
+        section = doc.sections[0]
+        section.top_margin = section.bottom_margin = Inches(1)
+        section.left_margin = section.right_margin = Inches(1)
+
+        # ── כותרת ראשית ──────────────────────────────────
+        site_label = doc.add_paragraph()
+        r0 = site_label.add_run('Artmidnet — CMS Schema Report')
+        r0.bold = True; r0.font.size = Pt(20); r0.font.color.rgb = RGBColor(0x1F,0x38,0x64)
+
+        meta = doc.add_paragraph()
+        meta.paragraph_format.space_before = Pt(2)
+        r_meta = meta.add_run(
+            f'Your Collections: {len(collections)}  |  {total_fields} Fields  |  '
+            f'Generated: {datetime.date.today().strftime("%d/%m/%Y")}'
+        )
+        r_meta.font.size = Pt(10); r_meta.font.color.rgb = RGBColor(0x88,0x88,0x88); r_meta.italic = True
+
+        # קו הפרדה
+        pPr = meta._p.get_or_add_pPr()
+        pBdr = OxmlElement('w:pBdr')
+        bottom_bdr = OxmlElement('w:bottom')
+        bottom_bdr.set(qn('w:val'), 'single'); bottom_bdr.set(qn('w:sz'), '6')
+        bottom_bdr.set(qn('w:space'), '1'); bottom_bdr.set(qn('w:color'), '1F3864')
+        pBdr.append(bottom_bdr); pPr.append(pBdr)
+
+        doc.add_paragraph()
+
+        # ── כל Collection ─────────────────────────────────
+        for idx, col in enumerate(collections, 1):
+            col_id      = col.get('collectionId', '')
+            col_name    = col.get('displayName',  col_id)
+            fields      = col.get('fields', [])
+
+            # כותרת Collection
+            col_heading = doc.add_paragraph()
+            col_heading.paragraph_format.space_before = Pt(14)
+            col_heading.paragraph_format.space_after  = Pt(2)
+            r_col = col_heading.add_run(f'{idx}. Collection = {col_name}')
+            r_col.bold = True; r_col.font.size = Pt(13); r_col.font.color.rgb = RGBColor(0x1F,0x38,0x64)
+
+            # שורת ID + מספר שדות
+            col_sub = doc.add_paragraph()
+            col_sub.paragraph_format.space_after = Pt(4)
+            r_id = col_sub.add_run(f'id = {col_id}')
+            r_id.font.size = Pt(10); r_id.font.color.rgb = RGBColor(0x88,0x88,0x88)
+
+            col_count = doc.add_paragraph()
+            col_count.paragraph_format.space_after = Pt(6)
+            r_count = col_count.add_run(f'{len(fields)} fields')
+            r_count.font.size = Pt(10); r_count.font.color.rgb = RGBColor(0x55,0x55,0x55)
+            r_count.italic = True
+
+            # טבלת שדות
+            if fields:
+                tbl = doc.add_table(rows=1, cols=4)
+                tbl.style = 'Table Grid'
+
+                # כותרות עמודות
+                hdr_cells = tbl.rows[0].cells
+                for i, txt in enumerate(['Field Display Name', 'Field Type', 'Field Key', 'System']):
+                    hdr_cells[i].text = txt
+                    set_cell_bg(hdr_cells[i], '1F3864')
+                    run = hdr_cells[i].paragraphs[0].runs[0]
+                    run.bold = True
+                    run.font.color.rgb = RGBColor(0xFF,0xFF,0xFF)
+                    run.font.size = Pt(10)
+
+                # שורות שדות
+                for f_idx, field in enumerate(fields):
+                    f_name   = field.get('displayName', '')
+                    f_type   = field.get('type', '')
+                    f_key    = field.get('key', '')
+                    f_system = 'Yes' if field.get('systemField') else 'No'
+                    row_bg   = 'F8F8F8' if f_idx % 2 == 0 else 'FFFFFF'
+                    type_rgb = hex_to_rgb(get_field_type_color(f_type))
+
+                    row = tbl.add_row().cells
+                    row[0].text = f_name
+                    row[1].text = f_type
+                    row[2].text = f_key
+                    row[3].text = f_system
+
+                    for c_idx, cell in enumerate(row):
+                        set_cell_bg(cell, row_bg)
+                        p = cell.paragraphs[0]
+                        if p.runs:
+                            p.runs[0].font.size = Pt(10)
+                            # צבע לפי סוג שדה בעמודת ה-Type בלבד
+                            if c_idx == 1:
+                                p.runs[0].font.color.rgb = RGBColor(*type_rgb)
+                            else:
+                                p.runs[0].font.color.rgb = RGBColor(0x33,0x33,0x33)
+
+            doc.add_paragraph()
+
+        # ── החזרת base64 ──────────────────────────────────
+        buf = io.BytesIO(); doc.save(buf); buf.seek(0)
+        docx_base64 = base64.b64encode(buf.read()).decode("utf-8")
+        filename = f'CMS_Schema_Report_{datetime.date.today()}.docx'
+
+        return jsonify({"status": "ok", "base64": docx_base64, "filename": filename})
 
     except Exception as e:
         return jsonify({"error": f"Internal error: {str(e)}"}), 500

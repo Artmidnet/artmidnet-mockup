@@ -1,16 +1,16 @@
 """
-Artmidnet Mockup Server — app.py V4
+Artmidnet Mockup Server — app.py V5
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
 V3: Added /layers-report endpoint — generates DOCX, returns file directly
 V4: /layers-report now returns base64 JSON instead of file download
-    (required for Wix Backend .jsw to receive the response)
+V5: Page name displayed prominently as main title in report header
 
 Endpoints:
   POST /mockup          — generates room mockup image (unchanged)
   GET  /health          — health check (unchanged)
-  POST /layers-report   — generates Layers Schema DOCX, returns base64 JSON (changed in V4)
+  POST /layers-report   — generates Layers Schema DOCX, returns base64 JSON
 """
 
 from flask import Flask, request, jsonify, send_file
@@ -21,17 +21,15 @@ from PIL import Image
 import io
 import base64
 
-# ── V3+: ייבוא ספריות לייצור DOCX ──────────────────────────
 import datetime
 from docx import Document as DocxDocument
 from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-# ────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
-CORS(app)  # Allow requests from Wix
+CORS(app)
 
 
 # ─────────────────────────────────────────────
@@ -43,10 +41,6 @@ def load_image_from_url(url: str) -> Image.Image:
     return Image.open(io.BytesIO(response.content)).convert("RGBA")
 
 
-# ─────────────────────────────────────────────
-# Helper: detect the outer black frame bounds
-# Returns (left, top, right, bottom) in pixels
-# ─────────────────────────────────────────────
 def detect_outer_frame(img: Image.Image, dark_threshold: int = 60) -> tuple:
     arr = np.array(img.convert("RGB"))
     h, w = arr.shape[:2]
@@ -84,15 +78,7 @@ def detect_outer_frame(img: Image.Image, dark_threshold: int = 60) -> tuple:
     return left, top, right, bottom
 
 
-# ─────────────────────────────────────────────
-# Helper: detect inner canvas area
-# ─────────────────────────────────────────────
-def detect_inner_canvas(
-    arr: np.ndarray,
-    outer: tuple,
-    bright_threshold: int = 100,
-    step: int = 1
-) -> tuple:
+def detect_inner_canvas(arr, outer, bright_threshold=100, step=1):
     left_o, top_o, right_o, bottom_o = outer
 
     inner_top = top_o
@@ -122,10 +108,7 @@ def detect_inner_canvas(
     return inner_left, inner_top, inner_right, inner_bottom
 
 
-# ─────────────────────────────────────────────
-# Helper: extract shadow strips
-# ─────────────────────────────────────────────
-def extract_shadow(img_arr: np.ndarray, outer: tuple, thickness: int = 8) -> dict:
+def extract_shadow(img_arr, outer, thickness=8):
     l, t, r, b = outer
     return {
         "left":   img_arr[t:b+1, l:l+thickness].copy(),
@@ -133,10 +116,7 @@ def extract_shadow(img_arr: np.ndarray, outer: tuple, thickness: int = 8) -> dic
     }
 
 
-# ─────────────────────────────────────────────
-# Helper: sample wall color
-# ─────────────────────────────────────────────
-def sample_wall_color(img_arr: np.ndarray, outer: tuple, margin: int = 20) -> tuple:
+def sample_wall_color(img_arr, outer, margin=20):
     l, t, r, b = outer
     y0 = max(0, t - margin)
     y1 = t
@@ -149,120 +129,74 @@ def sample_wall_color(img_arr: np.ndarray, outer: tuple, margin: int = 20) -> tu
     return tuple(int(v) for v in mean[:4])
 
 
-# ─────────────────────────────────────────────
-# MODE 1: STRETCH
-# ─────────────────────────────────────────────
-def apply_stretch(room_img: Image.Image, painting_img: Image.Image) -> Image.Image:
+def apply_stretch(room_img, painting_img):
     arr = np.array(room_img)
     outer = detect_outer_frame(room_img)
     inner = detect_inner_canvas(arr, outer)
-
     il, it, ir, ib = inner
     canvas_w = ir - il
     canvas_h = ib - it
-
     if canvas_w <= 0 or canvas_h <= 0:
         raise ValueError("Could not detect inner canvas area")
-
-    painting_resized = painting_img.resize(
-        (canvas_w, canvas_h), Image.LANCZOS
-    ).convert("RGBA")
-
+    painting_resized = painting_img.resize((canvas_w, canvas_h), Image.LANCZOS).convert("RGBA")
     result = room_img.copy().convert("RGBA")
     result.paste(painting_resized, (il, it), painting_resized)
-
     return result.convert("RGB")
 
 
-# ─────────────────────────────────────────────
-# MODE 2: ADAPT
-# ─────────────────────────────────────────────
-def apply_adapt(room_img: Image.Image, painting_img: Image.Image) -> Image.Image:
+def apply_adapt(room_img, painting_img):
     arr = np.array(room_img.convert("RGBA"))
     outer = detect_outer_frame(room_img)
     inner = detect_inner_canvas(arr, outer)
-
     lo, to, ro, bo = outer
     li, ti, ri, bi = inner
-
     ft_left   = li - lo
     ft_top    = ti - to
     ft_right  = ro - ri
     ft_bottom = bo - bi
-
     orig_canvas_w = ri - li
     paint_w, paint_h = painting_img.size
     aspect = paint_h / paint_w
     new_canvas_w = orig_canvas_w
     new_canvas_h = int(new_canvas_w * aspect)
-
     new_frame_w = new_canvas_w + ft_left + ft_right
     new_frame_h = new_canvas_h + ft_top  + ft_bottom
-
     shadow = extract_shadow(arr, outer)
     wall_color = sample_wall_color(arr, outer)
-
     frame_arr = np.zeros((new_frame_h, new_frame_w, 4), dtype=np.uint8)
     frame_arr[:, :] = (0, 0, 0, 255)
-
-    painting_resized = painting_img.resize(
-        (new_canvas_w, new_canvas_h), Image.LANCZOS
-    ).convert("RGBA")
+    painting_resized = painting_img.resize((new_canvas_w, new_canvas_h), Image.LANCZOS).convert("RGBA")
     p_arr = np.array(painting_resized)
     frame_arr[ft_top:ft_top+new_canvas_h, ft_left:ft_left+new_canvas_w] = p_arr
-
     frame_img = Image.fromarray(frame_arr, "RGBA")
-
     result = room_img.copy().convert("RGBA")
-    paste_x = lo
-    paste_y = to
-
     result_arr = np.array(result)
     result_arr[to:bo+1, lo:ro+1] = wall_color
     result = Image.fromarray(result_arr, "RGBA")
-
-    result.paste(frame_img, (paste_x, paste_y), frame_img)
-
+    result.paste(frame_img, (lo, to), frame_img)
     result_arr2 = np.array(result)
-
     sh_left = shadow["left"]
     if sh_left.size > 0:
-        new_sh_left = np.array(
-            Image.fromarray(sh_left).resize(
-                (sh_left.shape[1], new_frame_h), Image.LANCZOS
-            )
-        )
-        x0 = paste_x - sh_left.shape[1]
+        new_sh_left = np.array(Image.fromarray(sh_left).resize((sh_left.shape[1], new_frame_h), Image.LANCZOS))
+        x0 = lo - sh_left.shape[1]
         if x0 >= 0:
-            result_arr2[paste_y:paste_y+new_frame_h, x0:paste_x] = new_sh_left
-
+            result_arr2[to:to+new_frame_h, x0:lo] = new_sh_left
     sh_bot = shadow["bottom"]
     if sh_bot.size > 0:
-        new_sh_bot = np.array(
-            Image.fromarray(sh_bot).resize(
-                (new_frame_w, sh_bot.shape[0]), Image.LANCZOS
-            )
-        )
-        y0 = paste_y + new_frame_h
+        new_sh_bot = np.array(Image.fromarray(sh_bot).resize((new_frame_w, sh_bot.shape[0]), Image.LANCZOS))
+        y0 = to + new_frame_h
         if y0 + sh_bot.shape[0] <= result_arr2.shape[0]:
-            result_arr2[y0:y0+sh_bot.shape[0], paste_x:paste_x+new_frame_w] = new_sh_bot
-
+            result_arr2[y0:y0+sh_bot.shape[0], lo:lo+new_frame_w] = new_sh_bot
     return Image.fromarray(result_arr2, "RGBA").convert("RGB")
 
 
-# ─────────────────────────────────────────────
-# Helper: PIL Image → base64 JPEG string
-# ─────────────────────────────────────────────
-def image_to_base64(img: Image.Image, fmt: str = "JPEG") -> str:
+def image_to_base64(img, fmt="JPEG"):
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format=fmt, quality=90)
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
 
 
-# ─────────────────────────────────────────────
-# API ENDPOINT: POST /mockup  (unchanged)
-# ─────────────────────────────────────────────
 @app.route("/mockup", methods=["POST"])
 def mockup():
     try:
@@ -270,27 +204,14 @@ def mockup():
         room_url     = data.get("room_url")
         painting_url = data.get("painting_url")
         mode         = data.get("mode", "stretch").lower()
-
         if not room_url or not painting_url:
             return jsonify({"error": "room_url and painting_url are required"}), 400
-
         if mode not in ("stretch", "adapt"):
             return jsonify({"error": "mode must be 'stretch' or 'adapt'"}), 400
-
         room_img     = load_image_from_url(room_url)
         painting_img = load_image_from_url(painting_url)
-
-        if mode == "stretch":
-            result = apply_stretch(room_img, painting_img)
-        else:
-            result = apply_adapt(room_img, painting_img)
-
-        return jsonify({
-            "status": "ok",
-            "mode": mode,
-            "image_base64": image_to_base64(result)
-        })
-
+        result = apply_stretch(room_img, painting_img) if mode == "stretch" else apply_adapt(room_img, painting_img)
+        return jsonify({"status": "ok", "mode": mode, "image_base64": image_to_base64(result)})
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"Failed to download image: {str(e)}"}), 400
     except ValueError as e:
@@ -299,15 +220,13 @@ def mockup():
         return jsonify({"error": f"Internal error: {str(e)}"}), 500
 
 
-# ─────────────────────────────────────────────
-# Health check  (unchanged)
-# ─────────────────────────────────────────────
 @app.route("/health", methods=["GET"])
 def health():
-return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V4"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V5"})
+
 
 # ═════════════════════════════════════════════
-# V3/V4 — LAYERS REPORT helpers
+# LAYERS REPORT helpers
 # ═════════════════════════════════════════════
 
 TYPE_COLORS = {
@@ -340,14 +259,10 @@ def set_cell_bg(cell, hex_color):
 
 
 # ─────────────────────────────────────────────
-# API ENDPOINT: POST /layers-report  (V4)
+# API ENDPOINT: POST /layers-report  (V5)
 #
-# שינוי מ-V3:
-#   V3 החזיר קובץ DOCX להורדה ישירה (send_file)
-#   V4 מחזיר JSON עם base64 — כדי שWix Backend יוכל לקבל את התשובה
-#
-# Response (JSON):
-#   { "status": "ok", "base64": "...", "filename": "..." }
+# V5 change: page name is now displayed prominently
+#            as the main title at the top of the report
 # ─────────────────────────────────────────────
 @app.route("/layers-report", methods=["POST"])
 def layers_report():
@@ -367,27 +282,48 @@ def layers_report():
         section.left_margin   = Inches(1)
         section.right_margin  = Inches(1)
 
-        # כותרת ראשית
-        title = doc.add_paragraph()
-        title.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        run = title.add_run('Artmidnet — Layers Report')
-        run.bold           = True
-        run.font.size      = Pt(20)
-        run.font.color.rgb = RGBColor(0x1F, 0x38, 0x64)
+        # ── V5: כותרת ראשית — שם הדף בולט ──────────────────
+        site_label = doc.add_paragraph()
+        site_label.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        r0 = site_label.add_run('Artmidnet — Layers Report')
+        r0.font.size      = Pt(11)
+        r0.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+        r0.italic         = True
 
-        sub = doc.add_paragraph()
-        run2 = sub.add_run(
-            f'Page: {page_name}  |  '
-            f'{datetime.date.today().strftime("%d/%m/%Y")}  |  '
-            f'{len(elements)} elements'
+        page_title = doc.add_paragraph()
+        page_title.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        page_title.paragraph_format.space_before = Pt(4)
+        page_title.paragraph_format.space_after  = Pt(2)
+        r1 = page_title.add_run(f'Page: {page_name}')
+        r1.bold           = True
+        r1.font.size      = Pt(26)
+        r1.font.color.rgb = RGBColor(0x1F, 0x38, 0x64)
+
+        # קו הפרדה מתחת לכותרת
+        pPr = page_title._p.get_or_add_pPr()
+        pBdr = OxmlElement('w:pBdr')
+        bottom = OxmlElement('w:bottom')
+        bottom.set(qn('w:val'),   'single')
+        bottom.set(qn('w:sz'),    '6')
+        bottom.set(qn('w:space'), '1')
+        bottom.set(qn('w:color'), '1F3864')
+        pBdr.append(bottom)
+        pPr.append(pBdr)
+        # ────────────────────────────────────────────────────
+
+        meta = doc.add_paragraph()
+        meta.paragraph_format.space_before = Pt(6)
+        r2 = meta.add_run(
+            f'Date: {datetime.date.today().strftime("%d/%m/%Y")}   |   '
+            f'Total elements: {len(elements)}'
         )
-        run2.font.size      = Pt(10)
-        run2.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
-        run2.italic         = True
+        r2.font.size      = Pt(10)
+        r2.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+        r2.italic         = True
 
         doc.add_paragraph()
 
-        # סיכום לפי סוג
+        # ── Summary by Type ──────────────────────────────────
         h2 = doc.add_paragraph()
         r  = h2.add_run('Summary by Type')
         r.bold           = True
@@ -425,15 +361,15 @@ def layers_report():
 
         doc.add_paragraph()
 
-        # טבלה מלאה
+        # ── Full Elements Tree ───────────────────────────────
         h2b = doc.add_paragraph()
-        r2  = h2b.add_run('Full Elements Tree')
-        r2.bold           = True
-        r2.font.size      = Pt(13)
-        r2.font.color.rgb = RGBColor(0x2E, 0x75, 0xB6)
+        r2b = h2b.add_run('Full Elements Tree')
+        r2b.bold           = True
+        r2b.font.size      = Pt(13)
+        r2b.font.color.rgb = RGBColor(0x2E, 0x75, 0xB6)
 
         note = doc.add_paragraph()
-        rn = note.add_run('ID is indented by depth level. Depth = hierarchy level in Wix Layers.')
+        rn = note.add_run('Depth column represents hierarchy level. ID is indented accordingly.')
         rn.font.size      = Pt(9)
         rn.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
         rn.italic         = True
@@ -474,9 +410,6 @@ def layers_report():
                     p.runs[0].font.size      = Pt(9)
                     p.runs[0].font.color.rgb = RGBColor(*rgb)
 
-        # ── V4: שמירה ל-buffer והמרה ל-base64 ──────────────
-        # בV3 השתמשנו ב-send_file — זה לא עובד עם Wix Backend
-        # בV4 מחזירים JSON עם base64 שWix Backend יכול לקבל
         buf = io.BytesIO()
         doc.save(buf)
         buf.seek(0)
@@ -488,14 +421,10 @@ def layers_report():
             "base64":   docx_base64,
             "filename": filename
         })
-        # ────────────────────────────────────────────────────
 
     except Exception as e:
         return jsonify({"error": f"Internal error: {str(e)}"}), 500
 
 
-# ─────────────────────────────────────────────
-# Run
-# ─────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)

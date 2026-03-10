@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V8 
+Artmidnet Mockup Server — app.py V9
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -9,6 +9,7 @@ V5: Page name displayed prominently as main title in report header
 V6: Added /cms-report endpoint — generates CMS Schema DOCX, returns base64 JSON
 V7: MERGE — restored /noframe, /zoom, /rect from V2 (were missing in V6)
 V8: Fixed apply_adapt — shadow paste array shape mismatch (broadcast error)
+V9: Fixed apply_zoom — use detect_outer_frame+detect_inner_canvas instead of detect_white_area
 
 Endpoints:
   GET  /health          — health check
@@ -324,12 +325,23 @@ def apply_noframe(painting_img: Image.Image) -> Image.Image:
 # Painting fills 80% of mockup image
 # ─────────────────────────────────────────────
 def apply_zoom(painting_img: Image.Image, mockup_img: Image.Image) -> Image.Image:
-    mw, mh = mockup_img.size
+    # V9: use detect_outer_frame + detect_inner_canvas for accurate placement
+    arr = np.array(mockup_img.convert("RGBA"))
+    outer = detect_outer_frame(mockup_img)
+    inner = detect_inner_canvas(arr, outer)
+
+    il, it, ir, ib = inner
+    canvas_w = ir - il
+    canvas_h = ib - it
+
+    if canvas_w <= 0 or canvas_h <= 0:
+        raise ValueError("Could not detect inner canvas area in zoom mockup")
+
     pw, ph = painting_img.size
     ratio = ph / pw
 
-    max_w = int(mw * 0.8)
-    max_h = int(mh * 0.8)
+    max_w = int(canvas_w * 0.9)
+    max_h = int(canvas_h * 0.9)
 
     if ratio >= 1:
         paint_h = max_h
@@ -346,18 +358,12 @@ def apply_zoom(painting_img: Image.Image, mockup_img: Image.Image) -> Image.Imag
 
     painting_resized = painting_img.resize((paint_w, paint_h), Image.LANCZOS).convert("RGBA")
 
-    wl, wt, wr, wb = detect_white_area(mockup_img)
-    bg_color = sample_corner_color(mockup_img)
-
-    result_arr = np.array(mockup_img.copy().convert("RGBA"))
-    result_arr[wt:wb + 1, wl:wr + 1] = bg_color
-    result = Image.fromarray(result_arr, "RGBA")
-
-    cx = (wl + wr) // 2
-    cy = (wt + wb) // 2
+    cx = il + canvas_w // 2
+    cy = it + canvas_h // 2
     paste_x = cx - paint_w // 2
     paste_y = cy - paint_h // 2
 
+    result = mockup_img.copy().convert("RGBA")
     result.paste(painting_resized, (paste_x, paste_y), painting_resized)
 
     return result.convert("RGB")
@@ -420,7 +426,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V8"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V9"})
 
 
 @app.route("/mockup", methods=["POST"])

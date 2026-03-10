@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V6
+Artmidnet Mockup Server — app.py V7
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -7,12 +7,16 @@ V3: Added /layers-report endpoint — generates DOCX, returns file directly
 V4: /layers-report now returns base64 JSON instead of file download
 V5: Page name displayed prominently as main title in report header
 V6: Added /cms-report endpoint — generates CMS Schema DOCX, returns base64 JSON
+V7: MERGE — restored /noframe, /zoom, /rect from V2 (were missing in V6)
 
 Endpoints:
-  POST /mockup          — generates room mockup image (unchanged)
-  GET  /health          — health check (unchanged)
-  POST /layers-report   — generates Layers Schema DOCX, returns base64 JSON (unchanged)
-  POST /cms-report      — generates CMS Schema DOCX, returns base64 JSON (new in V6)
+  GET  /health          — health check
+  POST /mockup          — generates room mockup image (stretch / adapt)
+  POST /noframe         — BuildMockupNoframe — painting centered on light background
+  POST /zoom            — BuildMockupZoom    — painting fills 80% of mockup
+  POST /rect            — BuildMockupRect    — adapts frame AR to painting
+  POST /layers-report   — generates Layers Schema DOCX, returns base64 JSON
+  POST /cms-report      — generates CMS Schema DOCX, returns base64 JSON
 """
 
 from flask import Flask, request, jsonify
@@ -38,122 +42,153 @@ CORS(app)
 # Helper: download image from URL → PIL Image
 # ─────────────────────────────────────────────
 def load_image_from_url(url: str) -> Image.Image:
-    response = requests.get(url, timeout=15)
+    response = requests.get(url, timeout=30)
     response.raise_for_status()
     return Image.open(io.BytesIO(response.content)).convert("RGBA")
 
 
-def detect_outer_frame(img, dark_threshold=60):
+# ─────────────────────────────────────────────
+# Helper: detect outer black frame bounds
+# ─────────────────────────────────────────────
+def detect_outer_frame(img: Image.Image, dark_threshold: int = 60) -> tuple:
     arr = np.array(img.convert("RGB"))
     h, w = arr.shape[:2]
 
-    def is_dark_row(row_pixels): return np.mean(row_pixels) < dark_threshold
-    def is_dark_col(col_pixels): return np.mean(col_pixels) < dark_threshold
+    def is_dark_row(row_pixels):
+        return np.mean(row_pixels) < dark_threshold
+
+    def is_dark_col(col_pixels):
+        return np.mean(col_pixels) < dark_threshold
 
     top = 0
     for y in range(h):
-        if is_dark_row(arr[y]): top = y; break
+        if is_dark_row(arr[y]):
+            top = y
+            break
+
     bottom = h - 1
     for y in range(h - 1, -1, -1):
-        if is_dark_row(arr[y]): bottom = y; break
+        if is_dark_row(arr[y]):
+            bottom = y
+            break
+
     left = 0
     for x in range(w):
-        if is_dark_col(arr[:, x]): left = x; break
+        if is_dark_col(arr[:, x]):
+            left = x
+            break
+
     right = w - 1
     for x in range(w - 1, -1, -1):
-        if is_dark_col(arr[:, x]): right = x; break
+        if is_dark_col(arr[:, x]):
+            right = x
+            break
+
     return left, top, right, bottom
 
 
-def detect_inner_canvas(arr, outer, bright_threshold=100, step=1):
+# ─────────────────────────────────────────────
+# Helper: detect inner canvas (bright area)
+# ─────────────────────────────────────────────
+def detect_inner_canvas(arr: np.ndarray, outer: tuple, bright_threshold: int = 100) -> tuple:
     left_o, top_o, right_o, bottom_o = outer
+
     inner_top = top_o
     for y in range(top_o, bottom_o):
-        if np.mean(arr[y, left_o:right_o]) > bright_threshold: inner_top = y; break
+        if np.mean(arr[y, left_o:right_o]) > bright_threshold:
+            inner_top = y
+            break
+
     inner_bottom = bottom_o
     for y in range(bottom_o, top_o, -1):
-        if np.mean(arr[y, left_o:right_o]) > bright_threshold: inner_bottom = y; break
+        if np.mean(arr[y, left_o:right_o]) > bright_threshold:
+            inner_bottom = y
+            break
+
     inner_left = left_o
     for x in range(left_o, right_o):
-        if np.mean(arr[top_o:bottom_o, x]) > bright_threshold: inner_left = x; break
+        if np.mean(arr[top_o:bottom_o, x]) > bright_threshold:
+            inner_left = x
+            break
+
     inner_right = right_o
     for x in range(right_o, left_o, -1):
-        if np.mean(arr[top_o:bottom_o, x]) > bright_threshold: inner_right = x; break
+        if np.mean(arr[top_o:bottom_o, x]) > bright_threshold:
+            inner_right = x
+            break
+
     return inner_left, inner_top, inner_right, inner_bottom
 
 
-def extract_shadow(img_arr, outer, thickness=8):
+# ─────────────────────────────────────────────
+# Helper: detect white area in mockup image
+# ─────────────────────────────────────────────
+def detect_white_area(img: Image.Image, white_threshold: int = 240) -> tuple:
+    arr = np.array(img.convert("RGB"))
+    h, w = arr.shape[:2]
+
+    white_mask = np.all(arr > white_threshold, axis=2)
+
+    rows = np.any(white_mask, axis=1)
+    cols = np.any(white_mask, axis=0)
+
+    row_indices = np.where(rows)[0]
+    col_indices = np.where(cols)[0]
+
+    if len(row_indices) == 0 or len(col_indices) == 0:
+        return w // 4, h // 4, 3 * w // 4, 3 * h // 4
+
+    return int(col_indices[0]), int(row_indices[0]), int(col_indices[-1]), int(row_indices[-1])
+
+
+# ─────────────────────────────────────────────
+# Helper: extract shadow strips
+# ─────────────────────────────────────────────
+def extract_shadow(img_arr: np.ndarray, outer: tuple, thickness: int = 8) -> dict:
     l, t, r, b = outer
     return {
-        "left":   img_arr[t:b+1, l:l+thickness].copy(),
-        "bottom": img_arr[b-thickness:b+1, l:r+1].copy(),
+        "left":   img_arr[t:b + 1, l:l + thickness].copy(),
+        "bottom": img_arr[b - thickness:b + 1, l:r + 1].copy(),
     }
 
 
-def sample_wall_color(img_arr, outer, margin=20):
+# ─────────────────────────────────────────────
+# Helper: sample wall color near frame
+# ─────────────────────────────────────────────
+def sample_wall_color(img_arr: np.ndarray, outer: tuple, margin: int = 20) -> tuple:
     l, t, r, b = outer
-    y0 = max(0, t - margin); y1 = t
-    x0 = l + (r - l) // 3;   x1 = r - (r - l) // 3
+    y0 = max(0, t - margin)
+    y1 = t
+    x0 = l + (r - l) // 3
+    x1 = r - (r - l) // 3
     patch = img_arr[y0:y1, x0:x1]
-    if patch.size == 0: return (200, 200, 200, 255)
+    if patch.size == 0:
+        return (200, 200, 200, 255)
     mean = patch.mean(axis=(0, 1))
     return tuple(int(v) for v in mean[:4])
 
 
-def apply_stretch(room_img, painting_img):
-    arr = np.array(room_img)
-    outer = detect_outer_frame(room_img)
-    inner = detect_inner_canvas(arr, outer)
-    il, it, ir, ib = inner
-    canvas_w = ir - il; canvas_h = ib - it
-    if canvas_w <= 0 or canvas_h <= 0: raise ValueError("Could not detect inner canvas area")
-    painting_resized = painting_img.resize((canvas_w, canvas_h), Image.LANCZOS).convert("RGBA")
-    result = room_img.copy().convert("RGBA")
-    result.paste(painting_resized, (il, it), painting_resized)
-    return result.convert("RGB")
+# ─────────────────────────────────────────────
+# Helper: sample background color from corners
+# ─────────────────────────────────────────────
+def sample_corner_color(img: Image.Image, corner_size: int = 60) -> tuple:
+    arr = np.array(img.convert("RGBA"))
+    h, w = arr.shape[:2]
+    cs = min(corner_size, h // 4, w // 4)
+    corners = [
+        arr[:cs, :cs],
+        arr[:cs, w - cs:],
+        arr[h - cs:, :cs],
+        arr[h - cs:, w - cs:]
+    ]
+    mean = np.mean([c.mean(axis=(0, 1)) for c in corners], axis=0)
+    return tuple(int(v) for v in mean)
 
 
-def apply_adapt(room_img, painting_img):
-    arr = np.array(room_img.convert("RGBA"))
-    outer = detect_outer_frame(room_img)
-    inner = detect_inner_canvas(arr, outer)
-    lo, to, ro, bo = outer; li, ti, ri, bi = inner
-    ft_left = li-lo; ft_top = ti-to; ft_right = ro-ri; ft_bottom = bo-bi
-    orig_canvas_w = ri - li
-    paint_w, paint_h = painting_img.size
-    aspect = paint_h / paint_w
-    new_canvas_w = orig_canvas_w; new_canvas_h = int(new_canvas_w * aspect)
-    new_frame_w = new_canvas_w + ft_left + ft_right
-    new_frame_h = new_canvas_h + ft_top  + ft_bottom
-    shadow = extract_shadow(arr, outer)
-    wall_color = sample_wall_color(arr, outer)
-    frame_arr = np.zeros((new_frame_h, new_frame_w, 4), dtype=np.uint8)
-    frame_arr[:, :] = (0, 0, 0, 255)
-    painting_resized = painting_img.resize((new_canvas_w, new_canvas_h), Image.LANCZOS).convert("RGBA")
-    p_arr = np.array(painting_resized)
-    frame_arr[ft_top:ft_top+new_canvas_h, ft_left:ft_left+new_canvas_w] = p_arr
-    frame_img = Image.fromarray(frame_arr, "RGBA")
-    result = room_img.copy().convert("RGBA")
-    result_arr = np.array(result)
-    result_arr[to:bo+1, lo:ro+1] = wall_color
-    result = Image.fromarray(result_arr, "RGBA")
-    result.paste(frame_img, (lo, to), frame_img)
-    result_arr2 = np.array(result)
-    sh_left = shadow["left"]
-    if sh_left.size > 0:
-        new_sh_left = np.array(Image.fromarray(sh_left).resize((sh_left.shape[1], new_frame_h), Image.LANCZOS))
-        x0 = lo - sh_left.shape[1]
-        if x0 >= 0: result_arr2[to:to+new_frame_h, x0:lo] = new_sh_left
-    sh_bot = shadow["bottom"]
-    if sh_bot.size > 0:
-        new_sh_bot = np.array(Image.fromarray(sh_bot).resize((new_frame_w, sh_bot.shape[0]), Image.LANCZOS))
-        y0 = to + new_frame_h
-        if y0 + sh_bot.shape[0] <= result_arr2.shape[0]:
-            result_arr2[y0:y0+sh_bot.shape[0], lo:lo+new_frame_w] = new_sh_bot
-    return Image.fromarray(result_arr2, "RGBA").convert("RGB")
-
-
-def image_to_base64(img, fmt="JPEG"):
+# ─────────────────────────────────────────────
+# Helper: PIL Image → base64 JPEG
+# ─────────────────────────────────────────────
+def image_to_base64(img: Image.Image, fmt: str = "JPEG") -> str:
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format=fmt, quality=90)
     buf.seek(0)
@@ -161,41 +196,170 @@ def image_to_base64(img, fmt="JPEG"):
 
 
 # ─────────────────────────────────────────────
-# Endpoints: /mockup, /health, /layers-report
-# (unchanged from V5)
+# MODE: STRETCH
 # ─────────────────────────────────────────────
+def apply_stretch(room_img: Image.Image, painting_img: Image.Image) -> Image.Image:
+    arr = np.array(room_img)
+    outer = detect_outer_frame(room_img)
+    inner = detect_inner_canvas(arr, outer)
 
-@app.route("/mockup", methods=["POST"])
-def mockup():
-    try:
-        data = request.get_json(force=True)
-        room_url     = data.get("room_url")
-        painting_url = data.get("painting_url")
-        mode         = data.get("mode", "stretch").lower()
-        if not room_url or not painting_url:
-            return jsonify({"error": "room_url and painting_url are required"}), 400
-        if mode not in ("stretch", "adapt"):
-            return jsonify({"error": "mode must be 'stretch' or 'adapt'"}), 400
-        room_img     = load_image_from_url(room_url)
-        painting_img = load_image_from_url(painting_url)
-        result = apply_stretch(room_img, painting_img) if mode == "stretch" else apply_adapt(room_img, painting_img)
-        return jsonify({"status": "ok", "mode": mode, "image_base64": image_to_base64(result)})
-    except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"Failed to download image: {str(e)}"}), 400
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 422
-    except Exception as e:
-        return jsonify({"error": f"Internal error: {str(e)}"}), 500
+    il, it, ir, ib = inner
+    canvas_w = ir - il
+    canvas_h = ib - it
 
+    if canvas_w <= 0 or canvas_h <= 0:
+        raise ValueError("Could not detect inner canvas area")
 
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V6"})
+    painting_resized = painting_img.resize((canvas_w, canvas_h), Image.LANCZOS).convert("RGBA")
+    result = room_img.copy().convert("RGBA")
+    result.paste(painting_resized, (il, it), painting_resized)
+    return result.convert("RGB")
 
 
 # ─────────────────────────────────────────────
-# Layers Report helpers (unchanged from V5)
+# MODE: ADAPT
 # ─────────────────────────────────────────────
+def apply_adapt(room_img: Image.Image, painting_img: Image.Image) -> Image.Image:
+    arr = np.array(room_img.convert("RGBA"))
+    outer = detect_outer_frame(room_img)
+    inner = detect_inner_canvas(arr, outer)
+
+    lo, to, ro, bo = outer
+    li, ti, ri, bi = inner
+
+    ft_left   = li - lo
+    ft_top    = ti - to
+    ft_right  = ro - ri
+    ft_bottom = bo - bi
+
+    orig_canvas_w = ri - li
+    paint_w, paint_h = painting_img.size
+    aspect = paint_h / paint_w
+    new_canvas_w = orig_canvas_w
+    new_canvas_h = int(new_canvas_w * aspect)
+
+    new_frame_w = new_canvas_w + ft_left + ft_right
+    new_frame_h = new_canvas_h + ft_top  + ft_bottom
+
+    shadow = extract_shadow(arr, outer)
+    wall_color = sample_wall_color(arr, outer)
+
+    frame_arr = np.zeros((new_frame_h, new_frame_w, 4), dtype=np.uint8)
+    frame_arr[:, :] = (0, 0, 0, 255)
+
+    painting_resized = painting_img.resize((new_canvas_w, new_canvas_h), Image.LANCZOS).convert("RGBA")
+    p_arr = np.array(painting_resized)
+    frame_arr[ft_top:ft_top + new_canvas_h, ft_left:ft_left + new_canvas_w] = p_arr
+
+    frame_img = Image.fromarray(frame_arr, "RGBA")
+    result = room_img.copy().convert("RGBA")
+
+    result_arr = np.array(result)
+    result_arr[to:bo + 1, lo:ro + 1] = wall_color
+    result = Image.fromarray(result_arr, "RGBA")
+    result.paste(frame_img, (lo, to), frame_img)
+
+    result_arr2 = np.array(result)
+
+    sh_left = shadow["left"]
+    if sh_left.size > 0:
+        new_sh_left = np.array(Image.fromarray(sh_left).resize((sh_left.shape[1], new_frame_h), Image.LANCZOS))
+        x0 = lo - sh_left.shape[1]
+        if x0 >= 0:
+            result_arr2[to:to + new_frame_h, x0:lo] = new_sh_left
+
+    sh_bot = shadow["bottom"]
+    if sh_bot.size > 0:
+        new_sh_bot = np.array(Image.fromarray(sh_bot).resize((new_frame_w, sh_bot.shape[0]), Image.LANCZOS))
+        y0 = to + new_frame_h
+        if y0 + sh_bot.shape[0] <= result_arr2.shape[0]:
+            result_arr2[y0:y0 + sh_bot.shape[0], lo:lo + new_frame_w] = new_sh_bot
+
+    return Image.fromarray(result_arr2, "RGBA").convert("RGB")
+
+
+# ─────────────────────────────────────────────
+# MODE: NOFRAME
+# Centers painting on 2000x2000 light background
+# ─────────────────────────────────────────────
+def apply_noframe(painting_img: Image.Image) -> Image.Image:
+    pw, ph = painting_img.size
+    if max(pw, ph) != 2000:
+        scale = 2000 / max(pw, ph)
+        pw = int(pw * scale)
+        ph = int(ph * scale)
+        painting_img = painting_img.resize((pw, ph), Image.LANCZOS)
+
+    arr = np.array(painting_img.convert("RGB")).reshape(-1, 3).astype(float)
+    indices = np.random.choice(len(arr), min(300, len(arr)), replace=False)
+    chosen = arr[indices[np.random.randint(len(indices))]]
+    light = tuple(int(230 + (c / 255.0) * 20) for c in chosen) + (255,)
+
+    canvas = Image.new("RGBA", (2000, 2000), light)
+
+    x = (2000 - pw) // 2
+    y = (2000 - ph) // 2
+
+    painting_rgba = painting_img.convert("RGBA")
+    canvas.paste(painting_rgba, (x, y), painting_rgba)
+
+    return canvas.convert("RGB")
+
+
+# ─────────────────────────────────────────────
+# MODE: ZOOM
+# Painting fills 80% of mockup image
+# ─────────────────────────────────────────────
+def apply_zoom(painting_img: Image.Image, mockup_img: Image.Image) -> Image.Image:
+    mw, mh = mockup_img.size
+    pw, ph = painting_img.size
+    ratio = ph / pw
+
+    max_w = int(mw * 0.8)
+    max_h = int(mh * 0.8)
+
+    if ratio >= 1:
+        paint_h = max_h
+        paint_w = int(paint_h / ratio)
+        if paint_w > max_w:
+            paint_w = max_w
+            paint_h = int(paint_w * ratio)
+    else:
+        paint_w = max_w
+        paint_h = int(paint_w * ratio)
+        if paint_h > max_h:
+            paint_h = max_h
+            paint_w = int(paint_h / ratio)
+
+    painting_resized = painting_img.resize((paint_w, paint_h), Image.LANCZOS).convert("RGBA")
+
+    wl, wt, wr, wb = detect_white_area(mockup_img)
+    bg_color = sample_corner_color(mockup_img)
+
+    result_arr = np.array(mockup_img.copy().convert("RGBA"))
+    result_arr[wt:wb + 1, wl:wr + 1] = bg_color
+    result = Image.fromarray(result_arr, "RGBA")
+
+    cx = (wl + wr) // 2
+    cy = (wt + wb) // 2
+    paste_x = cx - paint_w // 2
+    paste_y = cy - paint_h // 2
+
+    result.paste(painting_resized, (paste_x, paste_y), painting_resized)
+
+    return result.convert("RGB")
+
+
+# ─────────────────────────────────────────────
+# MODE: RECT — adapts frame AR to painting
+# ─────────────────────────────────────────────
+def apply_rect(painting_img: Image.Image, mockup_img: Image.Image) -> Image.Image:
+    return apply_adapt(mockup_img, painting_img)
+
+
+# ═════════════════════════════════════════════
+# DOCX Helpers (layers-report + cms-report)
+# ═════════════════════════════════════════════
 
 TYPE_COLORS = {
     'Section': 'C00000', 'Box': '2E75B6', 'Text': '375623',
@@ -203,8 +367,25 @@ TYPE_COLORS = {
     'VectorImage': '006400', 'Menu': '595959', 'MenuContainer': '595959',
 }
 
+FIELD_TYPE_COLORS = {
+    'TEXT':          '1F3864',
+    'NUMBER':        '375623',
+    'BOOLEAN':       'C55A11',
+    'DATE':          '7030A0',
+    'IMAGE':         '006400',
+    'MEDIA_GALLERY': '006400',
+    'REFERENCE':     'C00000',
+    'ARRAY_STRING':  '2E75B6',
+    'ARRAY':         '2E75B6',
+    'OBJECT':        '595959',
+    'RICH_TEXT':     '404040',
+}
+
 def get_type_color(element_type):
     return TYPE_COLORS.get(element_type, '404040')
+
+def get_field_type_color(field_type):
+    return FIELD_TYPE_COLORS.get(field_type, '404040')
 
 def hex_to_rgb(hex_str):
     h = hex_str.lstrip('#')
@@ -219,6 +400,107 @@ def set_cell_bg(cell, hex_color):
     shd.set(qn('w:fill'), hex_color)
     tcPr.append(shd)
 
+
+# ═════════════════════════════════════════════
+# ENDPOINTS: IMAGE MOCKUPS
+# ═════════════════════════════════════════════
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V7"})
+
+
+@app.route("/mockup", methods=["POST"])
+def mockup():
+    try:
+        data = request.get_json(force=True)
+        room_url     = data.get("room_url")
+        painting_url = data.get("painting_url")
+        mode         = data.get("mode", "stretch").lower()
+
+        if not room_url or not painting_url:
+            return jsonify({"error": "room_url and painting_url are required"}), 400
+        if mode not in ("stretch", "adapt"):
+            return jsonify({"error": "mode must be 'stretch' or 'adapt'"}), 400
+
+        room_img     = load_image_from_url(room_url)
+        painting_img = load_image_from_url(painting_url)
+        result = apply_stretch(room_img, painting_img) if mode == "stretch" else apply_adapt(room_img, painting_img)
+
+        return jsonify({"status": "ok", "mode": mode, "image_base64": image_to_base64(result)})
+
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Failed to download image: {str(e)}"}), 400
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
+    except Exception as e:
+        return jsonify({"error": f"Internal error: {str(e)}"}), 500
+
+
+@app.route("/noframe", methods=["POST"])
+def noframe():
+    try:
+        data = request.get_json(force=True)
+        painting_url = data.get("painting_url")
+        if not painting_url:
+            return jsonify({"error": "painting_url is required"}), 400
+
+        painting_img = load_image_from_url(painting_url)
+        result = apply_noframe(painting_img)
+
+        return jsonify({"status": "ok", "image_base64": image_to_base64(result)})
+
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Failed to download image: {str(e)}"}), 400
+    except Exception as e:
+        return jsonify({"error": f"Internal error: {str(e)}"}), 500
+
+
+@app.route("/zoom", methods=["POST"])
+def zoom():
+    try:
+        data = request.get_json(force=True)
+        painting_url = data.get("painting_url")
+        mockup_url   = data.get("mockup_url")
+        if not painting_url or not mockup_url:
+            return jsonify({"error": "painting_url and mockup_url are required"}), 400
+
+        painting_img = load_image_from_url(painting_url)
+        mockup_img   = load_image_from_url(mockup_url)
+        result = apply_zoom(painting_img, mockup_img)
+
+        return jsonify({"status": "ok", "image_base64": image_to_base64(result)})
+
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Failed to download image: {str(e)}"}), 400
+    except Exception as e:
+        return jsonify({"error": f"Internal error: {str(e)}"}), 500
+
+
+@app.route("/rect", methods=["POST"])
+def rect():
+    try:
+        data = request.get_json(force=True)
+        painting_url = data.get("painting_url")
+        mockup_url   = data.get("mockup_url")
+        if not painting_url or not mockup_url:
+            return jsonify({"error": "painting_url and mockup_url are required"}), 400
+
+        painting_img = load_image_from_url(painting_url)
+        mockup_img   = load_image_from_url(mockup_url)
+        result = apply_rect(painting_img, mockup_img)
+
+        return jsonify({"status": "ok", "image_base64": image_to_base64(result)})
+
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Failed to download image: {str(e)}"}), 400
+    except Exception as e:
+        return jsonify({"error": f"Internal error: {str(e)}"}), 500
+
+
+# ═════════════════════════════════════════════
+# ENDPOINTS: DOCX REPORTS
+# ═════════════════════════════════════════════
 
 @app.route("/layers-report", methods=["POST"])
 def layers_report():
@@ -325,47 +607,6 @@ def layers_report():
         return jsonify({"error": f"Internal error: {str(e)}"}), 500
 
 
-# ═════════════════════════════════════════════
-# V6 — CMS REPORT
-# ═════════════════════════════════════════════
-#
-# Request JSON:
-# {
-#   "collections": [
-#     {
-#       "collectionId": "Paintings",
-#       "displayName":  "Paintings",
-#       "fields": [
-#         { "key": "title", "displayName": "Title", "type": "TEXT", "systemField": false },
-#         ...
-#       ]
-#     },
-#     ...
-#   ]
-# }
-#
-# Response JSON:
-# { "status": "ok", "base64": "...", "filename": "..." }
-# ═════════════════════════════════════════════
-
-FIELD_TYPE_COLORS = {
-    'TEXT':          '1F3864',
-    'NUMBER':        '375623',
-    'BOOLEAN':       'C55A11',
-    'DATE':          '7030A0',
-    'IMAGE':         '006400',
-    'MEDIA_GALLERY': '006400',
-    'REFERENCE':     'C00000',
-    'ARRAY_STRING':  '2E75B6',
-    'ARRAY':         '2E75B6',
-    'OBJECT':        '595959',
-    'RICH_TEXT':     '404040',
-}
-
-def get_field_type_color(field_type):
-    return FIELD_TYPE_COLORS.get(field_type, '404040')
-
-
 @app.route("/cms-report", methods=["POST"])
 def cms_report():
     try:
@@ -382,7 +623,6 @@ def cms_report():
         section.top_margin = section.bottom_margin = Inches(1)
         section.left_margin = section.right_margin = Inches(1)
 
-        # ── כותרת ראשית ──────────────────────────────────
         site_label = doc.add_paragraph()
         r0 = site_label.add_run('Artmidnet — CMS Schema Report')
         r0.bold = True; r0.font.size = Pt(20); r0.font.color.rgb = RGBColor(0x1F,0x38,0x64)
@@ -390,12 +630,11 @@ def cms_report():
         meta = doc.add_paragraph()
         meta.paragraph_format.space_before = Pt(2)
         r_meta = meta.add_run(
-            f'Your Collections: {len(collections)}  |  {total_fields} Fields  |  '
+            f'Collections: {len(collections)}  |  {total_fields} Fields  |  '
             f'Generated: {datetime.date.today().strftime("%d/%m/%Y")}'
         )
         r_meta.font.size = Pt(10); r_meta.font.color.rgb = RGBColor(0x88,0x88,0x88); r_meta.italic = True
 
-        # קו הפרדה
         pPr = meta._p.get_or_add_pPr()
         pBdr = OxmlElement('w:pBdr')
         bottom_bdr = OxmlElement('w:bottom')
@@ -405,20 +644,17 @@ def cms_report():
 
         doc.add_paragraph()
 
-        # ── כל Collection ─────────────────────────────────
         for idx, col in enumerate(collections, 1):
-            col_id      = col.get('collectionId', '')
-            col_name    = col.get('displayName',  col_id)
-            fields      = col.get('fields', [])
+            col_id   = col.get('collectionId', '')
+            col_name = col.get('displayName', col_id)
+            fields   = col.get('fields', [])
 
-            # כותרת Collection
             col_heading = doc.add_paragraph()
             col_heading.paragraph_format.space_before = Pt(14)
             col_heading.paragraph_format.space_after  = Pt(2)
             r_col = col_heading.add_run(f'{idx}. Collection = {col_name}')
             r_col.bold = True; r_col.font.size = Pt(13); r_col.font.color.rgb = RGBColor(0x1F,0x38,0x64)
 
-            # שורת ID + מספר שדות
             col_sub = doc.add_paragraph()
             col_sub.paragraph_format.space_after = Pt(4)
             r_id = col_sub.add_run(f'id = {col_id}')
@@ -430,12 +666,10 @@ def cms_report():
             r_count.font.size = Pt(10); r_count.font.color.rgb = RGBColor(0x55,0x55,0x55)
             r_count.italic = True
 
-            # טבלת שדות
             if fields:
                 tbl = doc.add_table(rows=1, cols=4)
                 tbl.style = 'Table Grid'
 
-                # כותרות עמודות
                 hdr_cells = tbl.rows[0].cells
                 for i, txt in enumerate(['Field Display Name', 'Field Type', 'Field Key', 'System']):
                     hdr_cells[i].text = txt
@@ -445,7 +679,6 @@ def cms_report():
                     run.font.color.rgb = RGBColor(0xFF,0xFF,0xFF)
                     run.font.size = Pt(10)
 
-                # שורות שדות
                 for f_idx, field in enumerate(fields):
                     f_name   = field.get('displayName', '')
                     f_type   = field.get('type', '')
@@ -465,7 +698,6 @@ def cms_report():
                         p = cell.paragraphs[0]
                         if p.runs:
                             p.runs[0].font.size = Pt(10)
-                            # צבע לפי סוג שדה בעמודת ה-Type בלבד
                             if c_idx == 1:
                                 p.runs[0].font.color.rgb = RGBColor(*type_rgb)
                             else:
@@ -473,7 +705,6 @@ def cms_report():
 
             doc.add_paragraph()
 
-        # ── החזרת base64 ──────────────────────────────────
         buf = io.BytesIO(); doc.save(buf); buf.seek(0)
         docx_base64 = base64.b64encode(buf.read()).decode("utf-8")
         filename = f'CMS_Schema_Report_{datetime.date.today()}.docx'

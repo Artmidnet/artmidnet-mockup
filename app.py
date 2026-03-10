@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V8
+Artmidnet Mockup Server — app.py V8 
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint

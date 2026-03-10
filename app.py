@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V9
+Artmidnet Mockup Server — app.py V10
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -10,6 +10,7 @@ V6: Added /cms-report endpoint — generates CMS Schema DOCX, returns base64 JSO
 V7: MERGE — restored /noframe, /zoom, /rect from V2 (were missing in V6)
 V8: Fixed apply_adapt — shadow paste array shape mismatch (broadcast error)
 V9: Fixed apply_zoom — use detect_outer_frame+detect_inner_canvas instead of detect_white_area
+V10: Fixed apply_zoom — clip painting to inner canvas bounds (horizontal overflow fix)
 
 Endpoints:
   GET  /health          — health check
@@ -363,6 +364,10 @@ def apply_zoom(painting_img: Image.Image, mockup_img: Image.Image) -> Image.Imag
     paste_x = cx - paint_w // 2
     paste_y = cy - paint_h // 2
 
+    # V10: clip to inner canvas bounds
+    paste_x = max(il, min(paste_x, ir - paint_w))
+    paste_y = max(it, min(paste_y, ib - paint_h))
+
     result = mockup_img.copy().convert("RGBA")
     result.paste(painting_resized, (paste_x, paste_y), painting_resized)
 
@@ -426,7 +431,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V9"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V10"})
 
 
 @app.route("/mockup", methods=["POST"])

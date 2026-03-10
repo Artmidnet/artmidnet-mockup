@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V7
+Artmidnet Mockup Server — app.py V8
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -8,6 +8,7 @@ V4: /layers-report now returns base64 JSON instead of file download
 V5: Page name displayed prominently as main title in report header
 V6: Added /cms-report endpoint — generates CMS Schema DOCX, returns base64 JSON
 V7: MERGE — restored /noframe, /zoom, /rect from V2 (were missing in V6)
+V8: Fixed apply_adapt — shadow paste array shape mismatch (broadcast error)
 
 Endpoints:
   GET  /health          — health check
@@ -218,6 +219,7 @@ def apply_stretch(room_img: Image.Image, painting_img: Image.Image) -> Image.Ima
 
 # ─────────────────────────────────────────────
 # MODE: ADAPT
+# V8: Fixed shadow paste — clip to image bounds to prevent shape mismatch
 # ─────────────────────────────────────────────
 def apply_adapt(room_img: Image.Image, painting_img: Image.Image) -> Image.Image:
     arr = np.array(room_img.convert("RGBA"))
@@ -255,25 +257,36 @@ def apply_adapt(room_img: Image.Image, painting_img: Image.Image) -> Image.Image
     result = room_img.copy().convert("RGBA")
 
     result_arr = np.array(result)
+    img_h, img_w = result_arr.shape[:2]
+
     result_arr[to:bo + 1, lo:ro + 1] = wall_color
     result = Image.fromarray(result_arr, "RGBA")
     result.paste(frame_img, (lo, to), frame_img)
 
     result_arr2 = np.array(result)
 
+    # V8: הגנה על shadow paste — חיתוך לגבולות התמונה
     sh_left = shadow["left"]
     if sh_left.size > 0:
-        new_sh_left = np.array(Image.fromarray(sh_left).resize((sh_left.shape[1], new_frame_h), Image.LANCZOS))
+        new_sh_left = np.array(Image.fromarray(sh_left).resize(
+            (sh_left.shape[1], new_frame_h), Image.LANCZOS))
         x0 = lo - sh_left.shape[1]
         if x0 >= 0:
-            result_arr2[to:to + new_frame_h, x0:lo] = new_sh_left
+            y_end = min(to + new_frame_h, img_h)
+            actual_h = y_end - to
+            result_arr2[to:y_end, x0:lo] = new_sh_left[:actual_h, :]
 
     sh_bot = shadow["bottom"]
     if sh_bot.size > 0:
-        new_sh_bot = np.array(Image.fromarray(sh_bot).resize((new_frame_w, sh_bot.shape[0]), Image.LANCZOS))
+        new_sh_bot = np.array(Image.fromarray(sh_bot).resize(
+            (new_frame_w, sh_bot.shape[0]), Image.LANCZOS))
         y0 = to + new_frame_h
-        if y0 + sh_bot.shape[0] <= result_arr2.shape[0]:
-            result_arr2[y0:y0 + sh_bot.shape[0], lo:lo + new_frame_w] = new_sh_bot
+        if y0 < img_h:
+            y_end = min(y0 + sh_bot.shape[0], img_h)
+            actual_h = y_end - y0
+            x_end = min(lo + new_frame_w, img_w)
+            actual_w = x_end - lo
+            result_arr2[y0:y_end, lo:x_end] = new_sh_bot[:actual_h, :actual_w]
 
     return Image.fromarray(result_arr2, "RGBA").convert("RGB")
 
@@ -407,7 +420,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V7"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V8"})
 
 
 @app.route("/mockup", methods=["POST"])

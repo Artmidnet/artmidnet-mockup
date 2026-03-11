@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V15
+Artmidnet Mockup Server — app.py V16
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -16,6 +16,7 @@ V12: New approach for zoom+rect — detect frame, create white canvas with paint
 V13: Test — only steps A+B+C (frame detection + white canvas), no painting/border/shadow
 V14: Fix detect_outer_frame — scan single pixel at center column/row instead of full row/col mean
 V15: Fix detect_outer_frame — use narrow center strip (5%) mean instead of single pixel, more robust
+V16: New detect_outer_frame — find largest bright canvas region, expand to cover black border
 
 Endpoints:
   GET  /health          — health check
@@ -58,62 +59,53 @@ def load_image_from_url(url: str) -> Image.Image:
 # ─────────────────────────────────────────────
 # Helper: detect outer black frame bounds
 # ─────────────────────────────────────────────
-def detect_outer_frame(img: Image.Image, dark_threshold: int = 60) -> tuple:
+def detect_outer_frame(img: Image.Image, bright_threshold: int = 200, border_expand: int = 12) -> tuple:
     """
-    V15: Scan from CENTER outward using a narrow center strip (5% of dimension).
-    More robust than single pixel — filters out furniture/noise,
-    but still avoids bright wall averaging masking the dark frame.
-    The detected bounds are the OUTER edge of the black frame border.
+    V16: Find the largest bright canvas region (the mockup canvas inside the frame).
+    Steps:
+    1. Create binary mask of bright pixels (all channels > bright_threshold)
+    2. Find bounding box of the largest connected bright region
+    3. Expand by border_expand pixels to include the black frame border
+    Returns outer bounds of the frame (including black border).
     """
     arr = np.array(img.convert("RGB"))
     h, w = arr.shape[:2]
-    cy, cx = h // 2, w // 2
 
-    # strip width = 5% of dimension, minimum 3 pixels
-    strip_w = max(3, int(w * 0.05))
-    strip_h = max(3, int(h * 0.05))
+    # Step 1: bright mask
+    bright_mask = np.all(arr > bright_threshold, axis=2).astype(np.uint8)
 
-    # center strip ranges
-    cx0 = max(0, cx - strip_w // 2)
-    cx1 = min(w, cx + strip_w // 2)
-    cy0 = max(0, cy - strip_h // 2)
-    cy1 = min(h, cy + strip_h // 2)
+    # Step 2: find connected components using scipy if available, else fallback
+    try:
+        from scipy import ndimage
+        labeled, num_features = ndimage.label(bright_mask)
+        if num_features == 0:
+            raise ValueError("No bright region found")
+        # find largest component
+        sizes = ndimage.sum(bright_mask, labeled, range(1, num_features + 1))
+        largest_label = np.argmax(sizes) + 1
+        component = (labeled == largest_label)
+        rows = np.any(component, axis=1)
+        cols = np.any(component, axis=0)
+        inner_top    = int(np.argmax(rows))
+        inner_bottom = int(len(rows) - 1 - np.argmax(rows[::-1]))
+        inner_left   = int(np.argmax(cols))
+        inner_right  = int(len(cols) - 1 - np.argmax(cols[::-1]))
+    except Exception:
+        # fallback: simple bounding box of all bright pixels
+        rows = np.any(bright_mask, axis=1)
+        cols = np.any(bright_mask, axis=0)
+        inner_top    = int(np.argmax(rows))
+        inner_bottom = int(len(rows) - 1 - np.argmax(rows[::-1]))
+        inner_left   = int(np.argmax(cols))
+        inner_right  = int(len(cols) - 1 - np.argmax(cols[::-1]))
 
-    def is_dark_col_strip(y):
-        return np.mean(arr[y, cx0:cx1]) < dark_threshold
+    # Step 3: expand to cover black border
+    left   = max(0,     inner_left   - border_expand)
+    top    = max(0,     inner_top    - border_expand)
+    right  = min(w - 1, inner_right  + border_expand)
+    bottom = min(h - 1, inner_bottom + border_expand)
 
-    def is_dark_row_strip(x):
-        return np.mean(arr[cy0:cy1, x]) < dark_threshold
-
-    # scan upward from center → find top border
-    top = 0
-    for y in range(cy, -1, -1):
-        if is_dark_col_strip(y):
-            top = y
-            break
-
-    # scan downward from center → find bottom border
-    bottom = h - 1
-    for y in range(cy, h):
-        if is_dark_col_strip(y):
-            bottom = y
-            break
-
-    # scan leftward from center → find left border
-    left = 0
-    for x in range(cx, -1, -1):
-        if is_dark_row_strip(x):
-            left = x
-            break
-
-    # scan rightward from center → find right border
-    right = w - 1
-    for x in range(cx, w):
-        if is_dark_row_strip(x):
-            right = x
-            break
-
-    print(f"V15 detect_outer_frame: left={left} top={top} right={right} bottom={bottom} | w={right-left} h={bottom-top}")
+    print(f"V16 detect_outer_frame: inner=({inner_left},{inner_top},{inner_right},{inner_bottom}) | outer=({left},{top},{right},{bottom}) | w={right-left} h={bottom-top}")
     return left, top, right, bottom
 
 
@@ -472,7 +464,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V15"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V16"})
 
 
 @app.route("/mockup", methods=["POST"])

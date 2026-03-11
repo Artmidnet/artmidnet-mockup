@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V13    
+Artmidnet Mockup Server — app.py V14
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -14,6 +14,7 @@ V10: Fixed apply_zoom — clip painting to inner canvas bounds (horizontal overf
 V11: Fixed apply_zoom — constrain painting size to inner canvas (no overflow in any orientation)
 V12: New approach for zoom+rect — detect frame, create white canvas with painting AR, add border+shadow
 V13: Test — only steps A+B+C (frame detection + white canvas), no painting/border/shadow
+V14: Fix detect_outer_frame — scan single pixel at center column/row instead of full row/col mean
 
 Endpoints:
   GET  /health          — health check
@@ -58,47 +59,46 @@ def load_image_from_url(url: str) -> Image.Image:
 # ─────────────────────────────────────────────
 def detect_outer_frame(img: Image.Image, dark_threshold: int = 60) -> tuple:
     """
-    V13: Scan from CENTER outward to find dark frame borders.
-    Avoids false detection when image background is dark.
+    V14: Scan single pixel at center column/row from CENTER outward.
+    Checks only the pixel at (cx, y) or (x, cy) — avoids averaging
+    bright wall pixels masking the dark frame border.
     """
     arr = np.array(img.convert("RGB"))
     h, w = arr.shape[:2]
     cy, cx = h // 2, w // 2
 
-    def is_dark_row(row_pixels):
-        return np.mean(row_pixels) < dark_threshold
+    def is_dark_pixel(pixel):
+        return np.mean(pixel) < dark_threshold
 
-    def is_dark_col(col_pixels):
-        return np.mean(col_pixels) < dark_threshold
-
-    # scan upward from center → find top border
+    # scan upward from center along center column → find top border
     top = 0
     for y in range(cy, -1, -1):
-        if is_dark_row(arr[y]):
+        if is_dark_pixel(arr[y, cx]):
             top = y
             break
 
-    # scan downward from center → find bottom border
+    # scan downward from center along center column → find bottom border
     bottom = h - 1
     for y in range(cy, h):
-        if is_dark_row(arr[y]):
+        if is_dark_pixel(arr[y, cx]):
             bottom = y
             break
 
-    # scan leftward from center → find left border
+    # scan leftward from center along center row → find left border
     left = 0
     for x in range(cx, -1, -1):
-        if is_dark_col(arr[:, x]):
+        if is_dark_pixel(arr[cy, x]):
             left = x
             break
 
-    # scan rightward from center → find right border
+    # scan rightward from center along center row → find right border
     right = w - 1
     for x in range(cx, w):
-        if is_dark_col(arr[:, x]):
+        if is_dark_pixel(arr[cy, x]):
             right = x
             break
 
+    print(f"V14 detect_outer_frame: left={left} top={top} right={right} bottom={bottom}")
     return left, top, right, bottom
 
 
@@ -457,7 +457,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V13"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V14"})
 
 
 @app.route("/mockup", methods=["POST"])

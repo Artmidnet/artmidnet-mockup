@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V19
+Artmidnet Mockup Server — app.py V20
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -20,6 +20,7 @@ V16: New detect_outer_frame — find largest bright canvas region, expand to cov
 V17: New approach — detect red dot (ImagePoint) in mockup, place white canvas using size_px + painting AR
 V18: שלב D — הלבשת תמונת המקור על המשטח הלבן
 V19: שלב E — מסגרת שחורה בעובי 2% מממוצע גובה+רוחב
+V20: שלב F — צללית רכה לימין-מטה (אור מלמעלה-שמאל)
 
 Endpoints:
   GET  /health          — health check
@@ -368,8 +369,43 @@ def apply_new_mockup(painting_img: Image.Image, mockup_img: Image.Image, size_px
             [paste_x + i, paste_y + i, paste_x + wc_w - 1 - i, paste_y + wc_h - 1 - i],
             outline=(0, 0, 0, 255)
         )
-    print(f"V19 border: thickness={border_thickness}px")
-    return result.convert("RGB")
+    print(f"V20 border: thickness={border_thickness}px")
+
+    # ── F: צללית רכה — אור מלמעלה-שמאל, צל לימין-מטה ──
+    shadow_offset_x = max(2, round(wc_w * 0.03))
+    shadow_offset_y = max(2, round(wc_h * 0.03))
+    shadow_blur     = max(3, round((wc_w + wc_h) / 2 * 0.025))
+    shadow_opacity  = 100  # מתוך 255
+
+    # מלבן שחור בגודל הציור + מסגרת
+    shadow_layer = Image.new("RGBA", result.size, (0, 0, 0, 0))
+    shadow_draw  = ImageDraw.Draw(shadow_layer)
+    sx = paste_x + shadow_offset_x
+    sy = paste_y + shadow_offset_y
+    shadow_draw.rectangle(
+        [sx, sy, sx + wc_w - 1, sy + wc_h - 1],
+        fill=(0, 0, 0, shadow_opacity)
+    )
+
+    # טשטוש הצל
+    from PIL import ImageFilter
+    shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=shadow_blur))
+
+    # הדבקת הצל מתחת לציור — סדר: תבנית → צל → ציור+מסגרת
+    base = mockup_img.copy().convert("RGBA")
+    base.paste(shadow_layer, (0, 0), shadow_layer)
+    base.paste(painting_resized, (paste_x, paste_y), painting_resized)
+
+    # ציור המסגרת שוב מעל הכל
+    draw2 = ImageDraw.Draw(base)
+    for i in range(border_thickness):
+        draw2.rectangle(
+            [paste_x + i, paste_y + i, paste_x + wc_w - 1 - i, paste_y + wc_h - 1 - i],
+            outline=(0, 0, 0, 255)
+        )
+
+    print(f"V20 shadow: offset=({shadow_offset_x},{shadow_offset_y}) blur={shadow_blur}")
+    return base.convert("RGB")
 
 
 # ─────────────────────────────────────────────
@@ -436,7 +472,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V19"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V20"})
 
 
 @app.route("/mockup", methods=["POST"])

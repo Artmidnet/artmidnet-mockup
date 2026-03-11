@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V12 
+Artmidnet Mockup Server — app.py V13
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -13,6 +13,7 @@ V9: Fixed apply_zoom — use detect_outer_frame+detect_inner_canvas instead of d
 V10: Fixed apply_zoom — clip painting to inner canvas bounds (horizontal overflow fix)
 V11: Fixed apply_zoom — constrain painting size to inner canvas (no overflow in any orientation)
 V12: New approach for zoom+rect — detect frame, create white canvas with painting AR, add border+shadow
+V13: Test — only steps A+B+C (frame detection + white canvas), no painting/border/shadow
 
 Endpoints:
   GET  /health          — health check
@@ -56,8 +57,13 @@ def load_image_from_url(url: str) -> Image.Image:
 # Helper: detect outer black frame bounds
 # ─────────────────────────────────────────────
 def detect_outer_frame(img: Image.Image, dark_threshold: int = 60) -> tuple:
+    """
+    V13: Scan from CENTER outward to find dark frame borders.
+    Avoids false detection when image background is dark.
+    """
     arr = np.array(img.convert("RGB"))
     h, w = arr.shape[:2]
+    cy, cx = h // 2, w // 2
 
     def is_dark_row(row_pixels):
         return np.mean(row_pixels) < dark_threshold
@@ -65,26 +71,30 @@ def detect_outer_frame(img: Image.Image, dark_threshold: int = 60) -> tuple:
     def is_dark_col(col_pixels):
         return np.mean(col_pixels) < dark_threshold
 
+    # scan upward from center → find top border
     top = 0
-    for y in range(h):
+    for y in range(cy, -1, -1):
         if is_dark_row(arr[y]):
             top = y
             break
 
+    # scan downward from center → find bottom border
     bottom = h - 1
-    for y in range(h - 1, -1, -1):
+    for y in range(cy, h):
         if is_dark_row(arr[y]):
             bottom = y
             break
 
+    # scan leftward from center → find left border
     left = 0
-    for x in range(w):
+    for x in range(cx, -1, -1):
         if is_dark_col(arr[:, x]):
             left = x
             break
 
+    # scan rightward from center → find right border
     right = w - 1
-    for x in range(w - 1, -1, -1):
+    for x in range(cx, w):
         if is_dark_col(arr[:, x]):
             right = x
             break
@@ -329,13 +339,11 @@ def apply_noframe(painting_img: Image.Image) -> Image.Image:
 # ─────────────────────────────────────────────
 def apply_new_mockup(painting_img: Image.Image, mockup_img: Image.Image) -> Image.Image:
     """
-    V12: Universal mockup builder — zoom and rect use this.
-    A) Detect frame in template (outer bounds)
+    V13: TEST — only steps A+B+C.
+    A) Detect frame in template
     B) Calculate painting AR
-    C) Create white canvas covering the frame, with painting AR
-    D) Paste painting onto white canvas, center it on frame
-    E) Add black border (2% of avg dimension)
-    F) Add drop shadow
+    C) Create white canvas covering frame with painting AR, paste on template
+    Steps D (painting) and E (border+shadow) disabled for testing.
     """
     # ── A: detect frame ──
     fl, ft, fr, fb = detect_outer_frame(mockup_img)
@@ -344,77 +352,44 @@ def apply_new_mockup(painting_img: Image.Image, mockup_img: Image.Image) -> Imag
     frame_cx = fl + frame_w // 2
     frame_cy = ft + frame_h // 2
 
+    print(f"V13 frame detected: left={fl} top={ft} right={fr} bottom={fb} | w={frame_w} h={frame_h} | cx={frame_cx} cy={frame_cy}")
+
     if frame_w <= 0 or frame_h <= 0:
-        raise ValueError("Could not detect frame in mockup template")
+        raise ValueError(f"Could not detect frame: w={frame_w} h={frame_h}")
 
     # ── B: painting AR ──
     pw, ph = painting_img.size
-    ar = ph / pw  # height/width
+    ar = ph / pw
 
-    # ── C: white canvas size — must cover frame fully, keep AR ──
-    # Option 1: fit by width
+    print(f"V13 painting size: {pw}x{ph} AR={ar:.3f}")
+
+    # ── C: white canvas — covers frame fully, keeps AR ──
     wc_w1 = frame_w
     wc_h1 = int(wc_w1 * ar)
-    # Option 2: fit by height
     wc_h2 = frame_h
     wc_w2 = int(wc_h2 / ar)
-    # Choose option that covers BOTH dimensions
+
     if wc_h1 >= frame_h:
         wc_w, wc_h = wc_w1, wc_h1
     elif wc_w2 >= frame_w:
         wc_w, wc_h = wc_w2, wc_h2
     else:
-        # fallback: take max of both
         wc_w = max(wc_w1, wc_w2)
         wc_h = int(wc_w * ar)
 
-    # ── D: paste painting onto white canvas ──
+    print(f"V13 white canvas: {wc_w}x{wc_h}")
+
     white_canvas = Image.new("RGBA", (wc_w, wc_h), (255, 255, 255, 255))
-    painting_resized = painting_img.resize((wc_w, wc_h), Image.LANCZOS).convert("RGBA")
-    white_canvas.paste(painting_resized, (0, 0), painting_resized)
 
-    # ── E: black border ──
-    border_thickness = max(2, int((wc_w + wc_h) / 2 * 0.02))
-    bordered_w = wc_w + 2 * border_thickness
-    bordered_h = wc_h + 2 * border_thickness
-    bordered = Image.new("RGBA", (bordered_w, bordered_h), (20, 20, 20, 255))
-    bordered.paste(white_canvas, (border_thickness, border_thickness), white_canvas)
-
-    # ── F: drop shadow ──
-    shadow_offset = max(4, border_thickness)
-    shadow_blur   = shadow_offset * 2
-    total_w = bordered_w + shadow_offset + shadow_blur
-    total_h = bordered_h + shadow_offset + shadow_blur
-
-    shadow_layer = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
-    shadow_rect  = Image.new("RGBA", (bordered_w, bordered_h), (0, 0, 0, 120))
-    # blur shadow
-    import PIL.ImageFilter as IF
-    shadow_rect_blurred = shadow_rect.filter(IF.GaussianBlur(radius=shadow_blur // 2))
-    shadow_layer.paste(shadow_rect_blurred, (shadow_offset, shadow_offset), shadow_rect_blurred)
-    shadow_layer.paste(bordered, (0, 0), bordered)
-    final_img = shadow_layer
-
-    # ── paste onto mockup background ──
+    # paste white canvas centered on frame
     result = mockup_img.copy().convert("RGBA")
-    paste_x = frame_cx - final_img.width  // 2
-    paste_y = frame_cy - final_img.height // 2
-
-    # cover the original frame area first with wall color
-    wall_color = sample_wall_color(np.array(mockup_img.convert("RGBA")), (fl, ft, fr, fb))
-    result_arr = np.array(result)
-    pad = shadow_blur
-    y0 = max(0, ft - pad); y1 = min(result_arr.shape[0], fb + pad + shadow_offset)
-    x0 = max(0, fl - pad); x1 = min(result_arr.shape[1], fr + pad + shadow_offset)
-    result_arr[y0:y1, x0:x1] = wall_color
-    result = Image.fromarray(result_arr, "RGBA")
-
-    # clip paste position to image bounds
+    paste_x = frame_cx - wc_w // 2
+    paste_y = frame_cy - wc_h // 2
     img_w, img_h = result.size
-    paste_x = max(0, min(paste_x, img_w - final_img.width))
-    paste_y = max(0, min(paste_y, img_h - final_img.height))
+    paste_x = max(0, min(paste_x, img_w - wc_w))
+    paste_y = max(0, min(paste_y, img_h - wc_h))
 
-    result.paste(final_img, (paste_x, paste_y), final_img)
+    result.paste(white_canvas, (paste_x, paste_y), white_canvas)
     return result.convert("RGB")
 
 
@@ -482,7 +457,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V12"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V13"})
 
 
 @app.route("/mockup", methods=["POST"])

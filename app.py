@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V16
+Artmidnet Mockup Server — app.py V17
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -17,6 +17,7 @@ V13: Test — only steps A+B+C (frame detection + white canvas), no painting/bor
 V14: Fix detect_outer_frame — scan single pixel at center column/row instead of full row/col mean
 V15: Fix detect_outer_frame — use narrow center strip (5%) mean instead of single pixel, more robust
 V16: New detect_outer_frame — find largest bright canvas region, expand to cover black border
+V17: New approach — detect red dot (ImagePoint) in mockup, place white canvas using size_px + painting AR
 
 Endpoints:
   GET  /health          — health check
@@ -59,54 +60,24 @@ def load_image_from_url(url: str) -> Image.Image:
 # ─────────────────────────────────────────────
 # Helper: detect outer black frame bounds
 # ─────────────────────────────────────────────
-def detect_outer_frame(img: Image.Image, bright_threshold: int = 200, border_expand: int = 12) -> tuple:
+def detect_red_dot(img: Image.Image) -> tuple:
     """
-    V16: Find the largest bright canvas region (the mockup canvas inside the frame).
-    Steps:
-    1. Create binary mask of bright pixels (all channels > bright_threshold)
-    2. Find bounding box of the largest connected bright region
-    3. Expand by border_expand pixels to include the black frame border
-    Returns outer bounds of the frame (including black border).
+    V17: Find center of red dot (ImagePoint) in mockup template.
+    Red dot criteria: R > 180, G < 80, B < 80.
+    Returns (cx, cy) center of the red region.
     """
     arr = np.array(img.convert("RGB"))
-    h, w = arr.shape[:2]
-
-    # Step 1: bright mask
-    bright_mask = np.all(arr > bright_threshold, axis=2).astype(np.uint8)
-
-    # Step 2: find connected components using scipy if available, else fallback
-    try:
-        from scipy import ndimage
-        labeled, num_features = ndimage.label(bright_mask)
-        if num_features == 0:
-            raise ValueError("No bright region found")
-        # find largest component
-        sizes = ndimage.sum(bright_mask, labeled, range(1, num_features + 1))
-        largest_label = np.argmax(sizes) + 1
-        component = (labeled == largest_label)
-        rows = np.any(component, axis=1)
-        cols = np.any(component, axis=0)
-        inner_top    = int(np.argmax(rows))
-        inner_bottom = int(len(rows) - 1 - np.argmax(rows[::-1]))
-        inner_left   = int(np.argmax(cols))
-        inner_right  = int(len(cols) - 1 - np.argmax(cols[::-1]))
-    except Exception:
-        # fallback: simple bounding box of all bright pixels
-        rows = np.any(bright_mask, axis=1)
-        cols = np.any(bright_mask, axis=0)
-        inner_top    = int(np.argmax(rows))
-        inner_bottom = int(len(rows) - 1 - np.argmax(rows[::-1]))
-        inner_left   = int(np.argmax(cols))
-        inner_right  = int(len(cols) - 1 - np.argmax(cols[::-1]))
-
-    # Step 3: expand to cover black border
-    left   = max(0,     inner_left   - border_expand)
-    top    = max(0,     inner_top    - border_expand)
-    right  = min(w - 1, inner_right  + border_expand)
-    bottom = min(h - 1, inner_bottom + border_expand)
-
-    print(f"V16 detect_outer_frame: inner=({inner_left},{inner_top},{inner_right},{inner_bottom}) | outer=({left},{top},{right},{bottom}) | w={right-left} h={bottom-top}")
-    return left, top, right, bottom
+    red_mask = (arr[:, :, 0] > 180) & (arr[:, :, 1] < 80) & (arr[:, :, 2] < 80)
+    ys, xs = np.where(red_mask)
+    if len(xs) == 0:
+        h, w = arr.shape[:2]
+        cx, cy = w // 2, h // 2
+        print(f"V17 detect_red_dot: NOT FOUND — using center ({cx},{cy})")
+        return cx, cy
+    cx = int(np.mean(xs))
+    cy = int(np.mean(ys))
+    print(f"V17 detect_red_dot: found {len(xs)} red pixels | center=({cx},{cy})")
+    return cx, cy
 
 
 # ─────────────────────────────────────────────
@@ -344,55 +315,41 @@ def apply_noframe(painting_img: Image.Image) -> Image.Image:
 # MODE: ZOOM
 # Painting fills 80% of mockup image
 # ─────────────────────────────────────────────
-def apply_new_mockup(painting_img: Image.Image, mockup_img: Image.Image) -> Image.Image:
+def apply_new_mockup(painting_img: Image.Image, mockup_img: Image.Image, size_px: int = 800) -> Image.Image:
     """
-    V13: TEST — only steps A+B+C.
-    A) Detect frame in template
-    B) Calculate painting AR
-    C) Create white canvas covering frame with painting AR, paste on template
-    Steps D (painting) and E (border+shadow) disabled for testing.
+    V17: Steps A+B+C using red dot (ImagePoint) and size_px.
+    A) Find red dot center = ImagePoint (cx, cy)
+    B) Calculate painting AR = h/w
+    C) Build white canvas: longest side = size_px, keep AR
+       Center it on ImagePoint, paste on mockup
     """
-    # ── A: detect frame ──
-    fl, ft, fr, fb = detect_outer_frame(mockup_img)
-    frame_w = fr - fl
-    frame_h = fb - ft
-    frame_cx = fl + frame_w // 2
-    frame_cy = ft + frame_h // 2
-
-    print(f"V13 frame detected: left={fl} top={ft} right={fr} bottom={fb} | w={frame_w} h={frame_h} | cx={frame_cx} cy={frame_cy}")
-
-    if frame_w <= 0 or frame_h <= 0:
-        raise ValueError(f"Could not detect frame: w={frame_w} h={frame_h}")
+    # ── A: find red dot ──
+    img_cx, img_cy = detect_red_dot(mockup_img)
 
     # ── B: painting AR ──
     pw, ph = painting_img.size
-    ar = ph / pw
+    ar = ph / pw  # height / width
+    print(f"V17 painting: {pw}x{ph} AR={ar:.3f} | size_px={size_px}")
 
-    print(f"V13 painting size: {pw}x{ph} AR={ar:.3f}")
-
-    # ── C: white canvas — covers frame fully, keeps AR ──
-    wc_w1 = frame_w
-    wc_h1 = int(wc_w1 * ar)
-    wc_h2 = frame_h
-    wc_w2 = int(wc_h2 / ar)
-
-    if wc_h1 >= frame_h:
-        wc_w, wc_h = wc_w1, wc_h1
-    elif wc_w2 >= frame_w:
-        wc_w, wc_h = wc_w2, wc_h2
+    # ── C: white canvas sized by size_px and AR ──
+    if ar <= 1.0:
+        # landscape or square: width is longest side
+        wc_w = size_px
+        wc_h = int(size_px * ar)
     else:
-        wc_w = max(wc_w1, wc_w2)
-        wc_h = int(wc_w * ar)
+        # portrait: height is longest side
+        wc_h = size_px
+        wc_w = int(size_px / ar)
 
-    print(f"V13 white canvas: {wc_w}x{wc_h}")
+    print(f"V17 white canvas: {wc_w}x{wc_h} | ImagePoint=({img_cx},{img_cy})")
 
     white_canvas = Image.new("RGBA", (wc_w, wc_h), (255, 255, 255, 255))
 
-    # paste white canvas centered on frame
+    # paste centered on ImagePoint
     result = mockup_img.copy().convert("RGBA")
-    paste_x = frame_cx - wc_w // 2
-    paste_y = frame_cy - wc_h // 2
     img_w, img_h = result.size
+    paste_x = img_cx - wc_w // 2
+    paste_y = img_cy - wc_h // 2
     paste_x = max(0, min(paste_x, img_w - wc_w))
     paste_y = max(0, min(paste_y, img_h - wc_h))
 
@@ -403,15 +360,15 @@ def apply_new_mockup(painting_img: Image.Image, mockup_img: Image.Image) -> Imag
 # ─────────────────────────────────────────────
 # MODE: ZOOM — painting fills mockup frame
 # ─────────────────────────────────────────────
-def apply_zoom(painting_img: Image.Image, mockup_img: Image.Image) -> Image.Image:
-    return apply_new_mockup(painting_img, mockup_img)
+def apply_zoom(painting_img: Image.Image, mockup_img: Image.Image, size_px: int = 800) -> Image.Image:
+    return apply_new_mockup(painting_img, mockup_img, size_px)
 
 
 # ─────────────────────────────────────────────
 # MODE: RECT — adapts frame AR to painting
 # ─────────────────────────────────────────────
-def apply_rect(painting_img: Image.Image, mockup_img: Image.Image) -> Image.Image:
-    return apply_new_mockup(painting_img, mockup_img)
+def apply_rect(painting_img: Image.Image, mockup_img: Image.Image, size_px: int = 800) -> Image.Image:
+    return apply_new_mockup(painting_img, mockup_img, size_px)
 
 
 # ═════════════════════════════════════════════
@@ -464,7 +421,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V16"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V17"})
 
 
 @app.route("/mockup", methods=["POST"])
@@ -524,7 +481,8 @@ def zoom():
 
         painting_img = load_image_from_url(painting_url)
         mockup_img   = load_image_from_url(mockup_url)
-        result = apply_zoom(painting_img, mockup_img)
+        size_px = int(data.get("size_px", 800))
+        result = apply_zoom(painting_img, mockup_img, size_px)
 
         return jsonify({"status": "ok", "image_base64": image_to_base64(result)})
 
@@ -545,7 +503,8 @@ def rect():
 
         painting_img = load_image_from_url(painting_url)
         mockup_img   = load_image_from_url(mockup_url)
-        result = apply_rect(painting_img, mockup_img)
+        size_px = int(data.get("size_px", 800))
+        result = apply_rect(painting_img, mockup_img, size_px)
 
         return jsonify({"status": "ok", "image_base64": image_to_base64(result)})
 

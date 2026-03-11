@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V10
+Artmidnet Mockup Server — app.py V11
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -11,6 +11,7 @@ V7: MERGE — restored /noframe, /zoom, /rect from V2 (were missing in V6)
 V8: Fixed apply_adapt — shadow paste array shape mismatch (broadcast error)
 V9: Fixed apply_zoom — use detect_outer_frame+detect_inner_canvas instead of detect_white_area
 V10: Fixed apply_zoom — clip painting to inner canvas bounds (horizontal overflow fix)
+V11: Fixed apply_zoom — constrain painting size to inner canvas (no overflow in any orientation)
 
 Endpoints:
   GET  /health          — health check
@@ -341,21 +342,15 @@ def apply_zoom(painting_img: Image.Image, mockup_img: Image.Image) -> Image.Imag
     pw, ph = painting_img.size
     ratio = ph / pw
 
-    max_w = int(canvas_w * 0.9)
-    max_h = int(canvas_h * 0.9)
+    # V11: fit painting inside inner canvas (no overflow in any direction)
+    max_w = canvas_w
+    max_h = canvas_h
 
-    if ratio >= 1:
+    paint_w = max_w
+    paint_h = int(paint_w * ratio)
+    if paint_h > max_h:
         paint_h = max_h
         paint_w = int(paint_h / ratio)
-        if paint_w > max_w:
-            paint_w = max_w
-            paint_h = int(paint_w * ratio)
-    else:
-        paint_w = max_w
-        paint_h = int(paint_w * ratio)
-        if paint_h > max_h:
-            paint_h = max_h
-            paint_w = int(paint_h / ratio)
 
     painting_resized = painting_img.resize((paint_w, paint_h), Image.LANCZOS).convert("RGBA")
 
@@ -431,7 +426,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V10"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V11"})
 
 
 @app.route("/mockup", methods=["POST"])

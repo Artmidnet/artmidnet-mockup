@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V17
+Artmidnet Mockup Server — app.py V18
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -18,6 +18,7 @@ V14: Fix detect_outer_frame — scan single pixel at center column/row instead o
 V15: Fix detect_outer_frame — use narrow center strip (5%) mean instead of single pixel, more robust
 V16: New detect_outer_frame — find largest bright canvas region, expand to cover black border
 V17: New approach — detect red dot (ImagePoint) in mockup, place white canvas using size_px + painting AR
+V18: שלב D — הלבשת תמונת המקור על המשטח הלבן
 
 Endpoints:
   GET  /health          — health check
@@ -341,11 +342,12 @@ def apply_new_mockup(painting_img: Image.Image, mockup_img: Image.Image, size_px
         wc_h = size_px
         wc_w = int(size_px / ar)
 
-    print(f"V17 white canvas: {wc_w}x{wc_h} | ImagePoint=({img_cx},{img_cy})")
+    print(f"V18 white canvas: {wc_w}x{wc_h} | ImagePoint=({img_cx},{img_cy})")
 
-    white_canvas = Image.new("RGBA", (wc_w, wc_h), (255, 255, 255, 255))
+    # ── D: resize painting to fit white canvas, paste ──
+    painting_resized = painting_img.convert("RGBA").resize((wc_w, wc_h), Image.LANCZOS)
 
-    # paste centered on ImagePoint
+    # paste painting centered on ImagePoint
     result = mockup_img.copy().convert("RGBA")
     img_w, img_h = result.size
     paste_x = img_cx - wc_w // 2
@@ -353,7 +355,8 @@ def apply_new_mockup(painting_img: Image.Image, mockup_img: Image.Image, size_px
     paste_x = max(0, min(paste_x, img_w - wc_w))
     paste_y = max(0, min(paste_y, img_h - wc_h))
 
-    result.paste(white_canvas, (paste_x, paste_y), white_canvas)
+    result.paste(painting_resized, (paste_x, paste_y), painting_resized)
+    print(f"V18 painting pasted at ({paste_x},{paste_y})")
     return result.convert("RGB")
 
 
@@ -421,7 +424,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V17"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V18"})
 
 
 @app.route("/mockup", methods=["POST"])

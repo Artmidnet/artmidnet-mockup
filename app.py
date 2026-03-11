@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V14
+Artmidnet Mockup Server — app.py V15
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -15,6 +15,7 @@ V11: Fixed apply_zoom — constrain painting size to inner canvas (no overflow i
 V12: New approach for zoom+rect — detect frame, create white canvas with painting AR, add border+shadow
 V13: Test — only steps A+B+C (frame detection + white canvas), no painting/border/shadow
 V14: Fix detect_outer_frame — scan single pixel at center column/row instead of full row/col mean
+V15: Fix detect_outer_frame — use narrow center strip (5%) mean instead of single pixel, more robust
 
 Endpoints:
   GET  /health          — health check
@@ -59,46 +60,60 @@ def load_image_from_url(url: str) -> Image.Image:
 # ─────────────────────────────────────────────
 def detect_outer_frame(img: Image.Image, dark_threshold: int = 60) -> tuple:
     """
-    V14: Scan single pixel at center column/row from CENTER outward.
-    Checks only the pixel at (cx, y) or (x, cy) — avoids averaging
-    bright wall pixels masking the dark frame border.
+    V15: Scan from CENTER outward using a narrow center strip (5% of dimension).
+    More robust than single pixel — filters out furniture/noise,
+    but still avoids bright wall averaging masking the dark frame.
+    The detected bounds are the OUTER edge of the black frame border.
     """
     arr = np.array(img.convert("RGB"))
     h, w = arr.shape[:2]
     cy, cx = h // 2, w // 2
 
-    def is_dark_pixel(pixel):
-        return np.mean(pixel) < dark_threshold
+    # strip width = 5% of dimension, minimum 3 pixels
+    strip_w = max(3, int(w * 0.05))
+    strip_h = max(3, int(h * 0.05))
 
-    # scan upward from center along center column → find top border
+    # center strip ranges
+    cx0 = max(0, cx - strip_w // 2)
+    cx1 = min(w, cx + strip_w // 2)
+    cy0 = max(0, cy - strip_h // 2)
+    cy1 = min(h, cy + strip_h // 2)
+
+    def is_dark_col_strip(y):
+        return np.mean(arr[y, cx0:cx1]) < dark_threshold
+
+    def is_dark_row_strip(x):
+        return np.mean(arr[cy0:cy1, x]) < dark_threshold
+
+    # scan upward from center → find top border
     top = 0
     for y in range(cy, -1, -1):
-        if is_dark_pixel(arr[y, cx]):
+        if is_dark_col_strip(y):
             top = y
             break
 
-    # scan downward from center along center column → find bottom border
+    # scan downward from center → find bottom border
     bottom = h - 1
     for y in range(cy, h):
-        if is_dark_pixel(arr[y, cx]):
+        if is_dark_col_strip(y):
             bottom = y
             break
 
-    # scan leftward from center along center row → find left border
+    # scan leftward from center → find left border
     left = 0
     for x in range(cx, -1, -1):
-        if is_dark_pixel(arr[cy, x]):
+        if is_dark_row_strip(x):
             left = x
             break
 
-    # scan rightward from center along center row → find right border
+    # scan rightward from center → find right border
     right = w - 1
     for x in range(cx, w):
-        if is_dark_pixel(arr[cy, x]):
+        if is_dark_row_strip(x):
             right = x
             break
 
-    print(f"V14 detect_outer_frame: left={left} top={top} right={right} bottom={bottom}")
+    print(f"V15 detect_outer_frame: left={left} top={top} right={right} bottom={bottom} | w={right-left} h={bottom-top}")
     return left, top, right, bottom
 
 
@@ -457,7 +472,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V14"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V15"})
 
 
 @app.route("/mockup", methods=["POST"])

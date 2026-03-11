@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V18
+Artmidnet Mockup Server — app.py V19
 ------------------------------------
 V1: Basic mockup generation (stretch + adapt modes)
 V2: CORS support, health check endpoint
@@ -19,6 +19,7 @@ V15: Fix detect_outer_frame — use narrow center strip (5%) mean instead of sin
 V16: New detect_outer_frame — find largest bright canvas region, expand to cover black border
 V17: New approach — detect red dot (ImagePoint) in mockup, place white canvas using size_px + painting AR
 V18: שלב D — הלבשת תמונת המקור על המשטח הלבן
+V19: שלב E — מסגרת שחורה בעובי 2% מממוצע גובה+רוחב
 
 Endpoints:
   GET  /health          — health check
@@ -356,7 +357,18 @@ def apply_new_mockup(painting_img: Image.Image, mockup_img: Image.Image, size_px
     paste_y = max(0, min(paste_y, img_h - wc_h))
 
     result.paste(painting_resized, (paste_x, paste_y), painting_resized)
-    print(f"V18 painting pasted at ({paste_x},{paste_y})")
+    print(f"V19 painting pasted at ({paste_x},{paste_y})")
+
+    # ── E: מסגרת שחורה — עובי 2% מממוצע גובה+רוחב ──
+    border_thickness = max(1, round((wc_w + wc_h) / 2 * 0.02))
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(result)
+    for i in range(border_thickness):
+        draw.rectangle(
+            [paste_x + i, paste_y + i, paste_x + wc_w - 1 - i, paste_y + wc_h - 1 - i],
+            outline=(0, 0, 0, 255)
+        )
+    print(f"V19 border: thickness={border_thickness}px")
     return result.convert("RGB")
 
 
@@ -424,7 +436,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V18"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V19"})
 
 
 @app.route("/mockup", methods=["POST"])

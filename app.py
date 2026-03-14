@@ -1,15 +1,15 @@
 """
-Artmidnet Mockup Server — app.py V20
+Artmidnet Mockup Server — app.py V21
 ------------------------------------
-V1: Basic mockup generation (stretch + adapt modes)
-V2: CORS support, health check endpoint
-V3: Added /layers-report endpoint — generates DOCX, returns file directly
-V4: /layers-report now returns base64 JSON instead of file download
-V5: Page name displayed prominently as main title in report header
-V6: Added /cms-report endpoint — generates CMS Schema DOCX, returns base64 JSON
-V7: MERGE — restored /noframe, /zoom, /rect from V2 (were missing in V6)
-V8: Fixed apply_adapt — shadow paste array shape mismatch (broadcast error)
-V9: Fixed apply_zoom — use detect_outer_frame+detect_inner_canvas instead of detect_white_area
+V1:  Basic mockup generation (stretch + adapt modes)
+V2:  CORS support, health check endpoint
+V3:  Added /layers-report endpoint — generates DOCX, returns file directly
+V4:  /layers-report now returns base64 JSON instead of file download
+V5:  Page name displayed prominently as main title in report header
+V6:  Added /cms-report endpoint — generates CMS Schema DOCX, returns base64 JSON
+V7:  MERGE — restored /noframe, /zoom, /rect from V2 (were missing in V6)
+V8:  Fixed apply_adapt — shadow paste array shape mismatch (broadcast error)
+V9:  Fixed apply_zoom — use detect_outer_frame+detect_inner_canvas instead of detect_white_area
 V10: Fixed apply_zoom — clip painting to inner canvas bounds (horizontal overflow fix)
 V11: Fixed apply_zoom — constrain painting size to inner canvas (no overflow in any orientation)
 V12: New approach for zoom+rect — detect frame, create white canvas with painting AR, add border+shadow
@@ -21,6 +21,7 @@ V17: New approach — detect red dot (ImagePoint) in mockup, place white canvas 
 V18: שלב D — הלבשת תמונת המקור על המשטח הלבן
 V19: שלב E — מסגרת שחורה בעובי 2% מממוצע גובה+רוחב
 V20: שלב F — צללית רכה לימין-מטה (אור מלמעלה-שמאל)
+V21: פרמטרי מסגרת וצל מגיעים מהבקשה (frame_width, frame_color, shadow_*) — ערכי default אם חסרים
 
 Endpoints:
   GET  /health          — health check
@@ -36,7 +37,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter
 import io
 import base64
 import datetime
@@ -61,7 +62,19 @@ def load_image_from_url(url: str) -> Image.Image:
 
 
 # ─────────────────────────────────────────────
-# Helper: detect outer black frame bounds
+# Helper: parse hex color string → (R, G, B)
+# ─────────────────────────────────────────────
+def parse_hex_color(hex_str: str) -> tuple:
+    """Convert '#2c1a0e' or '2c1a0e' to (R, G, B)."""
+    h = hex_str.lstrip('#')
+    try:
+        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+    except Exception:
+        return (0, 0, 0)
+
+
+# ─────────────────────────────────────────────
+# Helper: detect red dot (ImagePoint) in mockup
 # ─────────────────────────────────────────────
 def detect_red_dot(img: Image.Image) -> tuple:
     """
@@ -260,7 +273,6 @@ def apply_adapt(room_img: Image.Image, painting_img: Image.Image) -> Image.Image
 
     result_arr2 = np.array(result)
 
-    # V8: הגנה על shadow paste — חיתוך לגבולות התמונה
     sh_left = shadow["left"]
     if sh_left.size > 0:
         new_sh_left = np.array(Image.fromarray(sh_left).resize(
@@ -315,111 +327,116 @@ def apply_noframe(painting_img: Image.Image) -> Image.Image:
 
 
 # ─────────────────────────────────────────────
-# MODE: ZOOM
-# Painting fills 80% of mockup image
+# MODE: apply_new_mockup (zoom + rect)
+# V21: פרמטרי מסגרת וצל מגיעים מהבקשה — ערכי default אם חסרים
 # ─────────────────────────────────────────────
-def apply_new_mockup(painting_img: Image.Image, mockup_img: Image.Image, size_px: int = 800) -> Image.Image:
+def apply_new_mockup(
+    painting_img: Image.Image,
+    mockup_img: Image.Image,
+    size_px: int = 800,
+    frame_width: float = None,
+    frame_color: str = None,
+    shadow_offset_x: float = None,
+    shadow_offset_y: float = None,
+    shadow_blur: float = None,
+    shadow_spread: float = None,
+    shadow_opacity: float = None
+) -> Image.Image:
     """
-    V17: Steps A+B+C using red dot (ImagePoint) and size_px.
+    V21: Steps A–F with configurable frame and shadow parameters.
     A) Find red dot center = ImagePoint (cx, cy)
     B) Calculate painting AR = h/w
-    C) Build white canvas: longest side = size_px, keep AR
-       Center it on ImagePoint, paste on mockup
+    C) Build white canvas sized by size_px and AR
+    D) Paste painting on white canvas
+    E) Draw frame around painting
+    F) Add soft shadow below-right
     """
+
+    # ── ערכי default לפרמטרים חסרים ──
+    # עובי מסגרת: 2% מממוצע גובה+רוחב (מחושב אחרי C) אם לא סופק
+    _frame_color     = parse_hex_color(frame_color) if frame_color else None
+    _shadow_opacity  = int(shadow_opacity * 255) if shadow_opacity is not None else None
+
     # ── A: find red dot ──
     img_cx, img_cy = detect_red_dot(mockup_img)
 
     # ── B: painting AR ──
     pw, ph = painting_img.size
-    ar = ph / pw  # height / width
-    print(f"V17 painting: {pw}x{ph} AR={ar:.3f} | size_px={size_px}")
+    ar = ph / pw
+    print(f"V21 painting: {pw}x{ph} AR={ar:.3f} | size_px={size_px}")
 
     # ── C: white canvas sized by size_px and AR ──
     if ar <= 1.0:
-        # landscape or square: width is longest side
         wc_w = size_px
         wc_h = int(size_px * ar)
     else:
-        # portrait: height is longest side
         wc_h = size_px
         wc_w = int(size_px / ar)
 
-    print(f"V18 white canvas: {wc_w}x{wc_h} | ImagePoint=({img_cx},{img_cy})")
+    print(f"V21 white canvas: {wc_w}x{wc_h} | ImagePoint=({img_cx},{img_cy})")
 
-    # ── D: resize painting to fit white canvas, paste ──
+    # ── ערכי default מבוססי גודל ──
+    avg_side = (wc_w + wc_h) / 2
+    _border_thickness = max(1, round(frame_width)) if frame_width is not None else max(1, round(avg_side * 0.02))
+    _frame_color      = _frame_color if _frame_color is not None else (0, 0, 0)
+    _shadow_offset_x  = int(shadow_offset_x) if shadow_offset_x is not None else max(2, round(wc_w * 0.03))
+    _shadow_offset_y  = int(shadow_offset_y) if shadow_offset_y is not None else max(2, round(wc_h * 0.03))
+    _shadow_blur      = int(shadow_blur)      if shadow_blur      is not None else max(3, round(avg_side * 0.025))
+    _shadow_opacity   = _shadow_opacity       if _shadow_opacity  is not None else 100
+
+    print(f"V21 frame: thickness={_border_thickness}px color={_frame_color}")
+    print(f"V21 shadow: offset=({_shadow_offset_x},{_shadow_offset_y}) blur={_shadow_blur} opacity={_shadow_opacity}")
+
+    # ── D: resize painting, paste on mockup ──
     painting_resized = painting_img.convert("RGBA").resize((wc_w, wc_h), Image.LANCZOS)
 
-    # paste painting centered on ImagePoint
-    result = mockup_img.copy().convert("RGBA")
-    img_w, img_h = result.size
+    img_w, img_h = mockup_img.size
     paste_x = img_cx - wc_w // 2
     paste_y = img_cy - wc_h // 2
     paste_x = max(0, min(paste_x, img_w - wc_w))
     paste_y = max(0, min(paste_y, img_h - wc_h))
 
-    result.paste(painting_resized, (paste_x, paste_y), painting_resized)
-    print(f"V19 painting pasted at ({paste_x},{paste_y})")
-
-    # ── E: מסגרת שחורה — עובי 2% מממוצע גובה+רוחב ──
-    border_thickness = max(1, round((wc_w + wc_h) / 2 * 0.02))
-    from PIL import ImageDraw
-    draw = ImageDraw.Draw(result)
-    for i in range(border_thickness):
-        draw.rectangle(
-            [paste_x + i, paste_y + i, paste_x + wc_w - 1 - i, paste_y + wc_h - 1 - i],
-            outline=(0, 0, 0, 255)
-        )
-    print(f"V20 border: thickness={border_thickness}px")
-
-    # ── F: צללית רכה — אור מלמעלה-שמאל, צל לימין-מטה ──
-    shadow_offset_x = max(2, round(wc_w * 0.03))
-    shadow_offset_y = max(2, round(wc_h * 0.03))
-    shadow_blur     = max(3, round((wc_w + wc_h) / 2 * 0.025))
-    shadow_opacity  = 100  # מתוך 255
-
-    # מלבן שחור בגודל הציור + מסגרת
-    shadow_layer = Image.new("RGBA", result.size, (0, 0, 0, 0))
+    # ── F: צללית רכה — מתחת לציור ──
+    shadow_layer = Image.new("RGBA", mockup_img.size, (0, 0, 0, 0))
     shadow_draw  = ImageDraw.Draw(shadow_layer)
-    sx = paste_x + shadow_offset_x
-    sy = paste_y + shadow_offset_y
+    sx = paste_x + _shadow_offset_x
+    sy = paste_y + _shadow_offset_y
     shadow_draw.rectangle(
         [sx, sy, sx + wc_w - 1, sy + wc_h - 1],
-        fill=(0, 0, 0, shadow_opacity)
+        fill=(0, 0, 0, _shadow_opacity)
     )
+    shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=_shadow_blur))
 
-    # טשטוש הצל
-    from PIL import ImageFilter
-    shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=shadow_blur))
-
-    # הדבקת הצל מתחת לציור — סדר: תבנית → צל → ציור+מסגרת
+    # ── הרכבה: תבנית → צל → ציור → מסגרת ──
     base = mockup_img.copy().convert("RGBA")
     base.paste(shadow_layer, (0, 0), shadow_layer)
     base.paste(painting_resized, (paste_x, paste_y), painting_resized)
 
-    # ציור המסגרת שוב מעל הכל
-    draw2 = ImageDraw.Draw(base)
-    for i in range(border_thickness):
-        draw2.rectangle(
-            [paste_x + i, paste_y + i, paste_x + wc_w - 1 - i, paste_y + wc_h - 1 - i],
-            outline=(0, 0, 0, 255)
+    # ── E: מסגרת ──
+    draw = ImageDraw.Draw(base)
+    for i in range(_border_thickness):
+        draw.rectangle(
+            [paste_x + i, paste_y + i,
+             paste_x + wc_w - 1 - i, paste_y + wc_h - 1 - i],
+            outline=_frame_color + (255,)
         )
 
-    print(f"V20 shadow: offset=({shadow_offset_x},{shadow_offset_y}) blur={shadow_blur}")
+    print(f"V21 done: paste=({paste_x},{paste_y}) size={wc_w}x{wc_h}")
     return base.convert("RGB")
 
 
 # ─────────────────────────────────────────────
 # MODE: ZOOM — painting fills mockup frame
 # ─────────────────────────────────────────────
-def apply_zoom(painting_img: Image.Image, mockup_img: Image.Image, size_px: int = 800) -> Image.Image:
-    return apply_new_mockup(painting_img, mockup_img, size_px)
+def apply_zoom(painting_img: Image.Image, mockup_img: Image.Image, size_px: int = 800, **kwargs) -> Image.Image:
+    return apply_new_mockup(painting_img, mockup_img, size_px, **kwargs)
 
 
 # ─────────────────────────────────────────────
 # MODE: RECT — adapts frame AR to painting
 # ─────────────────────────────────────────────
-def apply_rect(painting_img: Image.Image, mockup_img: Image.Image, size_px: int = 800) -> Image.Image:
-    return apply_new_mockup(painting_img, mockup_img, size_px)
+def apply_rect(painting_img: Image.Image, mockup_img: Image.Image, size_px: int = 800, **kwargs) -> Image.Image:
+    return apply_new_mockup(painting_img, mockup_img, size_px, **kwargs)
 
 
 # ═════════════════════════════════════════════
@@ -472,7 +489,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V20"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V21"})
 
 
 @app.route("/mockup", methods=["POST"])
@@ -532,9 +549,20 @@ def zoom():
 
         painting_img = load_image_from_url(painting_url)
         mockup_img   = load_image_from_url(mockup_url)
-        size_px = int(data.get("size_px", 800))
-        result = apply_zoom(painting_img, mockup_img, size_px)
+        size_px      = int(data.get("size_px", 800))
 
+        # V21: פרמטרי מסגרת וצל — None אם לא סופקו (יחושבו כ-default בתוך apply_new_mockup)
+        kwargs = {
+            "frame_width":     data.get("frame_width"),
+            "frame_color":     data.get("frame_color"),
+            "shadow_offset_x": data.get("shadow_offset_x"),
+            "shadow_offset_y": data.get("shadow_offset_y"),
+            "shadow_blur":     data.get("shadow_blur"),
+            "shadow_spread":   data.get("shadow_spread"),
+            "shadow_opacity":  data.get("shadow_opacity"),
+        }
+
+        result = apply_zoom(painting_img, mockup_img, size_px, **kwargs)
         return jsonify({"status": "ok", "image_base64": image_to_base64(result)})
 
     except requests.exceptions.RequestException as e:
@@ -554,9 +582,20 @@ def rect():
 
         painting_img = load_image_from_url(painting_url)
         mockup_img   = load_image_from_url(mockup_url)
-        size_px = int(data.get("size_px", 800))
-        result = apply_rect(painting_img, mockup_img, size_px)
+        size_px      = int(data.get("size_px", 800))
 
+        # V21: פרמטרי מסגרת וצל — None אם לא סופקו
+        kwargs = {
+            "frame_width":     data.get("frame_width"),
+            "frame_color":     data.get("frame_color"),
+            "shadow_offset_x": data.get("shadow_offset_x"),
+            "shadow_offset_y": data.get("shadow_offset_y"),
+            "shadow_blur":     data.get("shadow_blur"),
+            "shadow_spread":   data.get("shadow_spread"),
+            "shadow_opacity":  data.get("shadow_opacity"),
+        }
+
+        result = apply_rect(painting_img, mockup_img, size_px, **kwargs)
         return jsonify({"status": "ok", "image_base64": image_to_base64(result)})
 
     except requests.exceptions.RequestException as e:

@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V23
+Artmidnet Mockup Server — app.py V24
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -24,6 +24,7 @@ V20: שלב F — צללית רכה לימין-מטה (אור מלמעלה-שמ�
 V21: פרמטרי מסגרת וצל מגיעים מהבקשה (frame_width, frame_color, shadow_*) — ערכי default אם חסרים
 V22: Fix — size_px מוגבל ל-80% מהממד הקטן של ה-mockup — מונע גלישה מחוץ לתמונה
 V23: Added /receipt endpoint — builds HTML receipt and sends via Gmail SMTP (fire and forget)
+V24: Fixed receipt HTML — fully inline styles, table-based layout, proper RTL for Gmail
 
 Endpoints:
   GET  /health          — health check
@@ -424,49 +425,55 @@ def apply_rect(painting_img: Image.Image, mockup_img: Image.Image, size_px: int 
 # ═════════════════════════════════════════════
 
 def build_receipt_html(data: dict) -> str:
-    """V23: Build full RTL Hebrew receipt HTML from order data."""
+    """V24: Email-safe RTL receipt — inline styles only, table-based layout."""
 
-    # ── items table rows ──
-    items_html = ""
-    for item in data.get("items", []):
-        items_html += f"""
-        <tr>
-          <td>{item.get('index', '')}</td>
-          <td>
-            <div class="item-name">{item.get('name', '')}</div>
-            <div class="item-sub">{item.get('details', '')}</div>
-          </td>
-          <td class="center">1</td>
-          <td class="ltr">{item.get('price', '')}</td>
-          <td class="ltr">{item.get('total', '')}</td>
-        </tr>"""
+    # ── colors ──
+    C_DARK   = "#1a2e4a"
+    C_GOLD   = "#c9a84c"
+    C_WHITE  = "#ffffff"
+    C_BG     = "#f5f5f5"
+    C_BORDER = "#e0e0e0"
+    C_TEXT   = "#333333"
+    C_MUTED  = "#888888"
+    C_LIGHT  = "#fafafa"
 
-    # ── VAT row ──
+    # ── VAT ──
     vat_rate = data.get("vatRate", 0)
-    if vat_rate and vat_rate > 0:
-        vat_label = f"מע\"מ {int(vat_rate * 100)}%"
-        vat_value = data.get("vatAmount", "₪0.00")
-    else:
-        vat_label = "מע\"מ (פטור)"
-        vat_value = "פטור"
+    vat_label = f"מע\"מ {int(vat_rate * 100)}%" if (vat_rate and vat_rate > 0) else "מע\"מ (פטור)"
+    vat_value = data.get("vatAmount", "₪0.00") if (vat_rate and vat_rate > 0) else "פטור"
 
     # ── logo ──
     logo_url = data.get("logoUrl", "")
     if logo_url:
-        logo_html = f'<img src="{logo_url}" alt="לוגו" style="max-height:60px;max-width:160px;object-fit:contain;">'
+        logo_html = f'<img src="{logo_url}" alt="לוגו" width="120" style="display:block;max-height:55px;width:auto;">'
     else:
-        logo_html = f'<span style="font-size:20px;font-weight:700;color:#ffffff;">{data.get("businessName","")}</span>'
+        logo_html = f'<span style="font-size:18px;font-weight:bold;color:{C_WHITE};">{data.get("businessName","")}</span>'
 
-    # ── payment details ──
-    payment_method  = data.get("paymentMethod", "")
+    # ── items rows ──
+    items_html = ""
+    for i, item in enumerate(data.get("items", [])):
+        row_bg = C_LIGHT if i % 2 == 0 else C_WHITE
+        items_html += f"""
+        <tr>
+          <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:right;font-size:12px;color:{C_TEXT};background:{row_bg};">{item.get('index','')}</td>
+          <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:right;font-size:12px;background:{row_bg};">
+            <div style="font-weight:bold;color:{C_DARK};">{item.get('name','')}</div>
+            <div style="font-size:11px;color:{C_MUTED};margin-top:2px;">{item.get('details','')}</div>
+          </td>
+          <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:center;font-size:12px;color:{C_TEXT};background:{row_bg};">1</td>
+          <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:left;font-size:12px;color:{C_TEXT};background:{row_bg};">{item.get('price','')}</td>
+          <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:left;font-size:12px;font-weight:bold;color:{C_DARK};background:{row_bg};">{item.get('total','')}</td>
+        </tr>"""
+
+    # ── payment detail row ──
     payment_details = data.get("paymentDetails", "")
-    payment_row = ""
+    payment_detail_row = ""
     if payment_details:
-        payment_row = f"""
-        <div class="pay-row">
-          <span class="pay-label">פירוט</span>
-          <span class="pay-value">{payment_details}</span>
-        </div>"""
+        payment_detail_row = f"""
+        <tr>
+          <td style="padding:7px 12px;text-align:right;font-size:12px;color:{C_MUTED};border-bottom:1px solid {C_BORDER};">פירוט</td>
+          <td style="padding:7px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{payment_details}</td>
+        </tr>"""
 
     html = f"""<!DOCTYPE html>
 <html lang="he" dir="rtl">
@@ -474,144 +481,160 @@ def build_receipt_html(data: dict) -> str:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>{data.get('documentType','קבלה')} {data.get('receiptNumber','')}</title>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700&display=swap');
-  *{{margin:0;padding:0;box-sizing:border-box;}}
-  body{{background:#e8e8e8;font-family:'Heebo',Arial,sans-serif;padding:30px 15px;direction:rtl;}}
-  .doc{{max-width:700px;margin:0 auto;background:#fff;border:1px solid #d0d0d0;box-shadow:0 4px 20px rgba(0,0,0,0.10);}}
-  .header{{background:#1a2e4a;color:#fff;padding:24px 32px;display:flex;align-items:center;justify-content:space-between;}}
-  .biz-info{{text-align:left;font-size:12px;line-height:1.8;color:rgba(255,255,255,0.85);}}
-  .biz-name{{font-size:15px;font-weight:700;color:#fff;margin-bottom:2px;}}
-  .title-band{{background:#c9a84c;padding:9px 32px;display:flex;justify-content:space-between;align-items:center;}}
-  .doc-type{{font-size:14px;font-weight:700;color:#1a2e4a;}}
-  .doc-num{{font-size:12px;font-weight:600;color:#1a2e4a;}}
-  .body{{padding:24px 32px;}}
-  .meta-row{{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid #ebebeb;}}
-  .label{{font-size:10px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:5px;}}
-  .cname{{font-size:16px;font-weight:700;color:#1a2e4a;}}
-  .csub{{font-size:12px;color:#666;margin-top:2px;}}
-  .date-val{{font-size:14px;font-weight:600;color:#1a2e4a;}}
-  .sec-title{{font-size:10px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;}}
-  table.items{{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:12px;}}
-  table.items thead tr{{background:#1a2e4a;color:#fff;}}
-  table.items thead th{{padding:9px 10px;text-align:right;font-weight:600;font-size:11px;}}
-  table.items thead th.ltr,table.items tbody td.ltr{{text-align:left;}}
-  table.items thead th.center,table.items tbody td.center{{text-align:center;}}
-  table.items tbody tr{{border-bottom:1px solid #f0f0f0;}}
-  table.items tbody tr:nth-child(even){{background:#fafafa;}}
-  table.items tbody td{{padding:10px 10px;color:#333;vertical-align:top;}}
-  .item-name{{font-weight:600;color:#1a2e4a;}}
-  .item-sub{{font-size:10px;color:#888;margin-top:2px;}}
-  .totals{{display:flex;justify-content:flex-end;margin-bottom:24px;}}
-  .totals-box{{width:240px;border:1px solid #e8e8e8;border-radius:3px;overflow:hidden;}}
-  .t-row{{display:flex;justify-content:space-between;padding:8px 12px;font-size:12px;border-bottom:1px solid #f0f0f0;}}
-  .t-label{{color:#666;}}.t-value{{font-weight:600;color:#333;}}
-  .t-row.exempt .t-label,.t-row.exempt .t-value{{color:#aaa;font-size:11px;}}
-  .t-row.grand{{background:#1a2e4a;}}
-  .t-row.grand .t-label{{color:#fff;font-weight:700;font-size:13px;}}
-  .t-row.grand .t-value{{color:#c9a84c;font-weight:700;font-size:14px;}}
-  .pay-box{{background:#f8f8f8;border:1px solid #ebebeb;border-radius:3px;padding:14px;margin-bottom:24px;}}
-  .pay-row{{display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px;}}
-  .pay-row:last-child{{margin-bottom:0;}}
-  .pay-label{{color:#888;}}.pay-value{{font-weight:600;color:#333;}}
-  .footer{{border-top:2px solid #1a2e4a;padding:12px 32px;display:flex;justify-content:space-between;align-items:center;background:#f5f5f5;}}
-  .footer-text{{font-size:10px;color:#888;}}
-  .page-info{{font-size:10px;color:#bbb;}}
-</style>
 </head>
-<body>
-<div class="doc">
+<body style="margin:0;padding:20px;background-color:#e8e8e8;font-family:Arial,sans-serif;direction:rtl;">
 
-  <div class="header">
-    <div>{logo_html}</div>
-    <div class="biz-info">
-      <div class="biz-name">{data.get('businessName','')}</div>
-      <div>ח.פ. {data.get('businessTaxId','')}</div>
-      <div>{data.get('bizAddress','')}</div>
-      <div>{data.get('businessEmail','')} | {data.get('bizPhone','')}</div>
-    </div>
-  </div>
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:680px;margin:0 auto;">
+<tr><td>
 
-  <div class="title-band">
-    <div class="doc-type">{data.get('documentType','קבלה')} מספר {data.get('receiptNumber','')}</div>
-    <div class="doc-num">הזמנה מספר {data.get('orderNumber','')}</div>
-  </div>
+  <!-- DOCUMENT WRAPPER -->
+  <table width="100%" cellpadding="0" cellspacing="0" border="0"
+    style="background:{C_WHITE};border:1px solid {C_BORDER};border-radius:4px;">
 
-  <div class="body">
+    <!-- HEADER -->
+    <tr>
+      <td style="background:{C_DARK};padding:20px 28px;border-radius:4px 4px 0 0;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="text-align:right;vertical-align:middle;">{logo_html}</td>
+            <td style="text-align:left;vertical-align:middle;">
+              <div style="font-size:15px;font-weight:bold;color:{C_WHITE};margin-bottom:4px;">{data.get('businessName','')}</div>
+              <div style="font-size:11px;color:rgba(255,255,255,0.8);line-height:1.7;">
+                ח.פ. {data.get('businessTaxId','')}<br>
+                {data.get('bizAddress','')}<br>
+                {data.get('businessEmail','')} | {data.get('bizPhone','')}
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
 
-    <div class="meta-row">
-      <div>
-        <div class="label">לכבוד</div>
-        <div class="cname">{data.get('customerName','')}</div>
-        <div class="csub">{data.get('customerPhone','')}</div>
-        <div class="csub">{data.get('customerEmail','')}</div>
-      </div>
-      <div style="text-align:left;">
-        <div class="label">תאריך</div>
-        <div class="date-val">{data.get('orderDate','')}</div>
-      </div>
-    </div>
+    <!-- TITLE BAND -->
+    <tr>
+      <td style="background:{C_GOLD};padding:8px 28px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="text-align:right;font-size:13px;font-weight:bold;color:{C_DARK};">
+              {data.get('documentType','קבלה')} מספר {data.get('receiptNumber','')}
+            </td>
+            <td style="text-align:left;font-size:12px;font-weight:600;color:{C_DARK};">
+              הזמנה מספר {data.get('orderNumber','')}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
 
-    <div class="sec-title">פירוט הרכישה</div>
-    <table class="items">
-      <thead>
-        <tr>
-          <th style="width:36px">מק"ט</th>
-          <th>פירוט</th>
-          <th class="center" style="width:60px">כמות</th>
-          <th class="ltr" style="width:80px">מחיר</th>
-          <th class="ltr" style="width:80px">סה"כ</th>
-        </tr>
-      </thead>
-      <tbody>{items_html}</tbody>
-    </table>
+    <!-- BODY -->
+    <tr>
+      <td style="padding:24px 28px;">
 
-    <div class="totals">
-      <div class="totals-box">
-        <div class="t-row">
-          <span class="t-label">סכום ביניים</span>
-          <span class="t-value">{data.get('subtotal','')}</span>
-        </div>
-        <div class="t-row">
-          <span class="t-label">משלוח</span>
-          <span class="t-value">{data.get('shipping','₪0.00')}</span>
-        </div>
-        <div class="t-row exempt">
-          <span class="t-label">{vat_label}</span>
-          <span class="t-value">{vat_value}</span>
-        </div>
-        <div class="t-row grand">
-          <span class="t-label">סה"כ לתשלום</span>
-          <span class="t-value">{data.get('total','')}</span>
-        </div>
-      </div>
-    </div>
+        <!-- RECIPIENT + DATE -->
+        <table width="100%" cellpadding="0" cellspacing="0" border="0"
+          style="margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid {C_BORDER};">
+          <tr>
+            <td style="text-align:right;vertical-align:top;">
+              <div style="font-size:10px;font-weight:bold;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:5px;">לכבוד</div>
+              <div style="font-size:15px;font-weight:bold;color:{C_DARK};">{data.get('customerName','')}</div>
+              <div style="font-size:12px;color:#666;margin-top:3px;">{data.get('customerPhone','')}</div>
+              <div style="font-size:12px;color:#666;margin-top:2px;">{data.get('customerEmail','')}</div>
+            </td>
+            <td style="text-align:left;vertical-align:top;">
+              <div style="font-size:10px;font-weight:bold;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:5px;">תאריך</div>
+              <div style="font-size:14px;font-weight:bold;color:{C_DARK};">{data.get('orderDate','')}</div>
+            </td>
+          </tr>
+        </table>
 
-    <div class="sec-title">פרטי תשלום</div>
-    <div class="pay-box">
-      <div class="pay-row">
-        <span class="pay-label">אמצעי תשלום</span>
-        <span class="pay-value">{payment_method}</span>
-      </div>
-      {payment_row}
-      <div class="pay-row">
-        <span class="pay-label">תאריך חיוב</span>
-        <span class="pay-value">{data.get('orderDate','')}</span>
-      </div>
-      <div class="pay-row">
-        <span class="pay-label">סכום</span>
-        <span class="pay-value">{data.get('total','')}</span>
-      </div>
-    </div>
+        <!-- ITEMS SECTION TITLE -->
+        <div style="font-size:10px;font-weight:bold;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">פירוט הרכישה</div>
 
-  </div>
+        <!-- ITEMS TABLE -->
+        <table width="100%" cellpadding="0" cellspacing="0" border="0"
+          style="border-collapse:collapse;margin-bottom:20px;font-size:12px;">
+          <thead>
+            <tr style="background:{C_DARK};">
+              <th style="padding:9px 8px;text-align:right;font-size:11px;font-weight:bold;color:{C_WHITE};width:36px;">מק"ט</th>
+              <th style="padding:9px 8px;text-align:right;font-size:11px;font-weight:bold;color:{C_WHITE};">פירוט</th>
+              <th style="padding:9px 8px;text-align:center;font-size:11px;font-weight:bold;color:{C_WHITE};width:50px;">כמות</th>
+              <th style="padding:9px 8px;text-align:left;font-size:11px;font-weight:bold;color:{C_WHITE};width:80px;">מחיר</th>
+              <th style="padding:9px 8px;text-align:left;font-size:11px;font-weight:bold;color:{C_WHITE};width:80px;">סה"כ</th>
+            </tr>
+          </thead>
+          <tbody>{items_html}</tbody>
+        </table>
 
-  <div class="footer">
-    <div class="footer-text">{data.get('footerText','')}</div>
-    <div class="page-info">{data.get('documentType','קבלה')} מס' {data.get('receiptNumber','')} | עמוד 1 מתוך 1</div>
-  </div>
+        <!-- TOTALS -->
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:20px;">
+          <tr>
+            <td width="55%"></td>
+            <td width="45%">
+              <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                style="border:1px solid {C_BORDER};border-radius:3px;overflow:hidden;">
+                <tr>
+                  <td style="padding:8px 12px;text-align:right;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">סכום ביניים</td>
+                  <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('subtotal','')}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 12px;text-align:right;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">משלוח</td>
+                  <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('shipping','₪0.00')}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 12px;text-align:right;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_label}</td>
+                  <td style="padding:8px 12px;text-align:left;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_value}</td>
+                </tr>
+                <tr style="background:{C_DARK};">
+                  <td style="padding:10px 12px;text-align:right;font-size:13px;font-weight:bold;color:{C_WHITE};">סה"כ לתשלום</td>
+                  <td style="padding:10px 12px;text-align:left;font-size:14px;font-weight:bold;color:{C_GOLD};">{data.get('total','')}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
 
-</div>
+        <!-- PAYMENT SECTION TITLE -->
+        <div style="font-size:10px;font-weight:bold;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">פרטי תשלום</div>
+
+        <!-- PAYMENT TABLE -->
+        <table width="100%" cellpadding="0" cellspacing="0" border="0"
+          style="background:{C_BG};border:1px solid {C_BORDER};border-radius:3px;margin-bottom:20px;">
+          <tr>
+            <td style="padding:8px 12px;text-align:right;font-size:12px;color:{C_MUTED};border-bottom:1px solid {C_BORDER};">אמצעי תשלום</td>
+            <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('paymentMethod','')}</td>
+          </tr>
+          {payment_detail_row}
+          <tr>
+            <td style="padding:8px 12px;text-align:right;font-size:12px;color:{C_MUTED};border-bottom:1px solid {C_BORDER};">תאריך חיוב</td>
+            <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('orderDate','')}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;text-align:right;font-size:12px;color:{C_MUTED};">סכום</td>
+            <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};">{data.get('total','')}</td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+
+    <!-- FOOTER -->
+    <tr>
+      <td style="background:{C_BG};border-top:2px solid {C_DARK};padding:10px 28px;border-radius:0 0 4px 4px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="text-align:right;font-size:10px;color:{C_MUTED};">{data.get('footerText','')}</td>
+            <td style="text-align:left;font-size:10px;color:#bbb;">{data.get('documentType','קבלה')} מס&apos; {data.get('receiptNumber','')} | עמוד 1 מתוך 1</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+
+  </table>
+  <!-- END DOCUMENT WRAPPER -->
+
+</td></tr>
+</table>
+
 </body>
 </html>"""
 
@@ -698,7 +721,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V23"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V24"})
 
 
 @app.route("/mockup", methods=["POST"])

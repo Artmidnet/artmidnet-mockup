@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V22
+Artmidnet Mockup Server — app.py V23
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -23,6 +23,7 @@ V19: שלב E — מסגרת שחורה בעובי 2% מממוצע גובה+רו
 V20: שלב F — צללית רכה לימין-מטה (אור מלמעלה-שמאל)
 V21: פרמטרי מסגרת וצל מגיעים מהבקשה (frame_width, frame_color, shadow_*) — ערכי default אם חסרים
 V22: Fix — size_px מוגבל ל-80% מהממד הקטן של ה-mockup — מונע גלישה מחוץ לתמונה
+V23: Added /receipt endpoint — builds HTML receipt and sends via Gmail SMTP (fire and forget)
 
 Endpoints:
   GET  /health          — health check
@@ -32,6 +33,7 @@ Endpoints:
   POST /rect            — BuildMockupRect    — adapts frame AR to painting
   POST /layers-report   — generates Layers Schema DOCX, returns base64 JSON
   POST /cms-report      — generates CMS Schema DOCX, returns base64 JSON
+  POST /receipt         — builds HTML receipt and sends email to customer
 """
 
 from flask import Flask, request, jsonify
@@ -42,6 +44,11 @@ from PIL import Image, ImageDraw, ImageFilter
 import io
 import base64
 import datetime
+import os
+import smtplib
+import threading
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 from docx import Document as DocxDocument
 from docx.shared import Pt, RGBColor, Inches
@@ -78,11 +85,6 @@ def parse_hex_color(hex_str: str) -> tuple:
 # Helper: detect red dot (ImagePoint) in mockup
 # ─────────────────────────────────────────────
 def detect_red_dot(img: Image.Image) -> tuple:
-    """
-    V17: Find center of red dot (ImagePoint) in mockup template.
-    Red dot criteria: R > 180, G < 80, B < 80.
-    Returns (cx, cy) center of the red region.
-    """
     arr = np.array(img.convert("RGB"))
     red_mask = (arr[:, :, 0] > 180) & (arr[:, :, 1] < 80) & (arr[:, :, 2] < 80)
     ys, xs = np.where(red_mask)
@@ -228,7 +230,6 @@ def apply_stretch(room_img: Image.Image, painting_img: Image.Image) -> Image.Ima
 
 # ─────────────────────────────────────────────
 # MODE: ADAPT
-# V8: Fixed shadow paste — clip to image bounds to prevent shape mismatch
 # ─────────────────────────────────────────────
 def apply_adapt(room_img: Image.Image, painting_img: Image.Image) -> Image.Image:
     arr = np.array(room_img.convert("RGBA"))
@@ -301,7 +302,6 @@ def apply_adapt(room_img: Image.Image, painting_img: Image.Image) -> Image.Image
 
 # ─────────────────────────────────────────────
 # MODE: NOFRAME
-# Centers painting on 2000x2000 light background
 # ─────────────────────────────────────────────
 def apply_noframe(painting_img: Image.Image) -> Image.Image:
     pw, ph = painting_img.size
@@ -329,8 +329,6 @@ def apply_noframe(painting_img: Image.Image) -> Image.Image:
 
 # ─────────────────────────────────────────────
 # MODE: apply_new_mockup (zoom + rect)
-# V21: פרמטרי מסגרת וצל מגיעים מהבקשה — ערכי default אם חסרים
-# V22: size_px מוגבל ל-80% מהממד הקטן של ה-mockup — מונע גלישה
 # ─────────────────────────────────────────────
 def apply_new_mockup(
     painting_img: Image.Image,
@@ -345,22 +343,18 @@ def apply_new_mockup(
     shadow_opacity: float = None
 ) -> Image.Image:
 
-    # ── A: find red dot ──
     img_cx, img_cy = detect_red_dot(mockup_img)
 
-    # ── V22: הגבלת size_px ל-80% מהממד הקטן של ה-mockup ──
     img_w, img_h = mockup_img.size
     max_size = int(min(img_w, img_h) * 0.80)
     if size_px > max_size:
         print(f"V22 size_px capped: {size_px} → {max_size} (mockup={img_w}x{img_h})")
         size_px = max_size
 
-    # ── B: painting AR ──
     pw, ph = painting_img.size
     ar = ph / pw
     print(f"V22 painting: {pw}x{ph} AR={ar:.3f} | size_px={size_px}")
 
-    # ── C: white canvas sized by size_px and AR ──
     if ar <= 1.0:
         wc_w = size_px
         wc_h = int(size_px * ar)
@@ -370,28 +364,21 @@ def apply_new_mockup(
 
     print(f"V22 white canvas: {wc_w}x{wc_h} | ImagePoint=({img_cx},{img_cy})")
 
-    # ── ערכי default מבוססי גודל ──
     avg_side = (wc_w + wc_h) / 2
-    _frame_color     = parse_hex_color(frame_color) if frame_color else (0, 0, 0)
+    _frame_color      = parse_hex_color(frame_color) if frame_color else (0, 0, 0)
     _border_thickness = max(1, round(frame_width)) if frame_width is not None else max(1, round(avg_side * 0.02))
     _shadow_offset_x  = int(shadow_offset_x) if shadow_offset_x is not None else max(2, round(wc_w * 0.03))
     _shadow_offset_y  = int(shadow_offset_y) if shadow_offset_y is not None else max(2, round(wc_h * 0.03))
     _shadow_blur      = int(shadow_blur)      if shadow_blur      is not None else max(3, round(avg_side * 0.025))
     _shadow_opacity   = int(shadow_opacity * 255) if shadow_opacity is not None else 100
 
-    print(f"V22 frame: thickness={_border_thickness}px color={_frame_color}")
-    print(f"V22 shadow: offset=({_shadow_offset_x},{_shadow_offset_y}) blur={_shadow_blur} opacity={_shadow_opacity}")
-
-    # ── D: resize painting ──
     painting_resized = painting_img.convert("RGBA").resize((wc_w, wc_h), Image.LANCZOS)
 
-    # ── מיקום הציור ממורכז על הנקודה האדומה ──
     paste_x = img_cx - wc_w // 2
     paste_y = img_cy - wc_h // 2
     paste_x = max(0, min(paste_x, img_w - wc_w))
     paste_y = max(0, min(paste_y, img_h - wc_h))
 
-    # ── F: צללית רכה ──
     shadow_layer = Image.new("RGBA", mockup_img.size, (0, 0, 0, 0))
     shadow_draw  = ImageDraw.Draw(shadow_layer)
     sx = paste_x + _shadow_offset_x
@@ -402,12 +389,10 @@ def apply_new_mockup(
     )
     shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=_shadow_blur))
 
-    # ── הרכבה: תבנית → צל → ציור → מסגרת ──
     base = mockup_img.copy().convert("RGBA")
     base.paste(shadow_layer, (0, 0), shadow_layer)
     base.paste(painting_resized, (paste_x, paste_y), painting_resized)
 
-    # ── E: מסגרת ──
     draw = ImageDraw.Draw(base)
     for i in range(_border_thickness):
         draw.rectangle(
@@ -421,21 +406,250 @@ def apply_new_mockup(
 
 
 # ─────────────────────────────────────────────
-# MODE: ZOOM — painting fills mockup frame
+# MODE: ZOOM
 # ─────────────────────────────────────────────
 def apply_zoom(painting_img: Image.Image, mockup_img: Image.Image, size_px: int = 800, **kwargs) -> Image.Image:
     return apply_new_mockup(painting_img, mockup_img, size_px, **kwargs)
 
 
 # ─────────────────────────────────────────────
-# MODE: RECT — adapts frame AR to painting
+# MODE: RECT
 # ─────────────────────────────────────────────
 def apply_rect(painting_img: Image.Image, mockup_img: Image.Image, size_px: int = 800, **kwargs) -> Image.Image:
     return apply_new_mockup(painting_img, mockup_img, size_px, **kwargs)
 
 
 # ═════════════════════════════════════════════
-# DOCX Helpers (layers-report + cms-report)
+# RECEIPT: HTML Builder
+# ═════════════════════════════════════════════
+
+def build_receipt_html(data: dict) -> str:
+    """V23: Build full RTL Hebrew receipt HTML from order data."""
+
+    # ── items table rows ──
+    items_html = ""
+    for item in data.get("items", []):
+        items_html += f"""
+        <tr>
+          <td>{item.get('index', '')}</td>
+          <td>
+            <div class="item-name">{item.get('name', '')}</div>
+            <div class="item-sub">{item.get('details', '')}</div>
+          </td>
+          <td class="center">1</td>
+          <td class="ltr">{item.get('price', '')}</td>
+          <td class="ltr">{item.get('total', '')}</td>
+        </tr>"""
+
+    # ── VAT row ──
+    vat_rate = data.get("vatRate", 0)
+    if vat_rate and vat_rate > 0:
+        vat_label = f"מע\"מ {int(vat_rate * 100)}%"
+        vat_value = data.get("vatAmount", "₪0.00")
+    else:
+        vat_label = "מע\"מ (פטור)"
+        vat_value = "פטור"
+
+    # ── logo ──
+    logo_url = data.get("logoUrl", "")
+    if logo_url:
+        logo_html = f'<img src="{logo_url}" alt="לוגו" style="max-height:60px;max-width:160px;object-fit:contain;">'
+    else:
+        logo_html = f'<span style="font-size:20px;font-weight:700;color:#ffffff;">{data.get("businessName","")}</span>'
+
+    # ── payment details ──
+    payment_method  = data.get("paymentMethod", "")
+    payment_details = data.get("paymentDetails", "")
+    payment_row = ""
+    if payment_details:
+        payment_row = f"""
+        <div class="pay-row">
+          <span class="pay-label">פירוט</span>
+          <span class="pay-value">{payment_details}</span>
+        </div>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>{data.get('documentType','קבלה')} {data.get('receiptNumber','')}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700&display=swap');
+  *{{margin:0;padding:0;box-sizing:border-box;}}
+  body{{background:#e8e8e8;font-family:'Heebo',Arial,sans-serif;padding:30px 15px;direction:rtl;}}
+  .doc{{max-width:700px;margin:0 auto;background:#fff;border:1px solid #d0d0d0;box-shadow:0 4px 20px rgba(0,0,0,0.10);}}
+  .header{{background:#1a2e4a;color:#fff;padding:24px 32px;display:flex;align-items:center;justify-content:space-between;}}
+  .biz-info{{text-align:left;font-size:12px;line-height:1.8;color:rgba(255,255,255,0.85);}}
+  .biz-name{{font-size:15px;font-weight:700;color:#fff;margin-bottom:2px;}}
+  .title-band{{background:#c9a84c;padding:9px 32px;display:flex;justify-content:space-between;align-items:center;}}
+  .doc-type{{font-size:14px;font-weight:700;color:#1a2e4a;}}
+  .doc-num{{font-size:12px;font-weight:600;color:#1a2e4a;}}
+  .body{{padding:24px 32px;}}
+  .meta-row{{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid #ebebeb;}}
+  .label{{font-size:10px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:5px;}}
+  .cname{{font-size:16px;font-weight:700;color:#1a2e4a;}}
+  .csub{{font-size:12px;color:#666;margin-top:2px;}}
+  .date-val{{font-size:14px;font-weight:600;color:#1a2e4a;}}
+  .sec-title{{font-size:10px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;}}
+  table.items{{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:12px;}}
+  table.items thead tr{{background:#1a2e4a;color:#fff;}}
+  table.items thead th{{padding:9px 10px;text-align:right;font-weight:600;font-size:11px;}}
+  table.items thead th.ltr,table.items tbody td.ltr{{text-align:left;}}
+  table.items thead th.center,table.items tbody td.center{{text-align:center;}}
+  table.items tbody tr{{border-bottom:1px solid #f0f0f0;}}
+  table.items tbody tr:nth-child(even){{background:#fafafa;}}
+  table.items tbody td{{padding:10px 10px;color:#333;vertical-align:top;}}
+  .item-name{{font-weight:600;color:#1a2e4a;}}
+  .item-sub{{font-size:10px;color:#888;margin-top:2px;}}
+  .totals{{display:flex;justify-content:flex-end;margin-bottom:24px;}}
+  .totals-box{{width:240px;border:1px solid #e8e8e8;border-radius:3px;overflow:hidden;}}
+  .t-row{{display:flex;justify-content:space-between;padding:8px 12px;font-size:12px;border-bottom:1px solid #f0f0f0;}}
+  .t-label{{color:#666;}}.t-value{{font-weight:600;color:#333;}}
+  .t-row.exempt .t-label,.t-row.exempt .t-value{{color:#aaa;font-size:11px;}}
+  .t-row.grand{{background:#1a2e4a;}}
+  .t-row.grand .t-label{{color:#fff;font-weight:700;font-size:13px;}}
+  .t-row.grand .t-value{{color:#c9a84c;font-weight:700;font-size:14px;}}
+  .pay-box{{background:#f8f8f8;border:1px solid #ebebeb;border-radius:3px;padding:14px;margin-bottom:24px;}}
+  .pay-row{{display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px;}}
+  .pay-row:last-child{{margin-bottom:0;}}
+  .pay-label{{color:#888;}}.pay-value{{font-weight:600;color:#333;}}
+  .footer{{border-top:2px solid #1a2e4a;padding:12px 32px;display:flex;justify-content:space-between;align-items:center;background:#f5f5f5;}}
+  .footer-text{{font-size:10px;color:#888;}}
+  .page-info{{font-size:10px;color:#bbb;}}
+</style>
+</head>
+<body>
+<div class="doc">
+
+  <div class="header">
+    <div>{logo_html}</div>
+    <div class="biz-info">
+      <div class="biz-name">{data.get('businessName','')}</div>
+      <div>ח.פ. {data.get('businessTaxId','')}</div>
+      <div>{data.get('bizAddress','')}</div>
+      <div>{data.get('businessEmail','')} | {data.get('bizPhone','')}</div>
+    </div>
+  </div>
+
+  <div class="title-band">
+    <div class="doc-type">{data.get('documentType','קבלה')} מספר {data.get('receiptNumber','')}</div>
+    <div class="doc-num">הזמנה מספר {data.get('orderNumber','')}</div>
+  </div>
+
+  <div class="body">
+
+    <div class="meta-row">
+      <div>
+        <div class="label">לכבוד</div>
+        <div class="cname">{data.get('customerName','')}</div>
+        <div class="csub">{data.get('customerPhone','')}</div>
+        <div class="csub">{data.get('customerEmail','')}</div>
+      </div>
+      <div style="text-align:left;">
+        <div class="label">תאריך</div>
+        <div class="date-val">{data.get('orderDate','')}</div>
+      </div>
+    </div>
+
+    <div class="sec-title">פירוט הרכישה</div>
+    <table class="items">
+      <thead>
+        <tr>
+          <th style="width:36px">מק"ט</th>
+          <th>פירוט</th>
+          <th class="center" style="width:60px">כמות</th>
+          <th class="ltr" style="width:80px">מחיר</th>
+          <th class="ltr" style="width:80px">סה"כ</th>
+        </tr>
+      </thead>
+      <tbody>{items_html}</tbody>
+    </table>
+
+    <div class="totals">
+      <div class="totals-box">
+        <div class="t-row">
+          <span class="t-label">סכום ביניים</span>
+          <span class="t-value">{data.get('subtotal','')}</span>
+        </div>
+        <div class="t-row">
+          <span class="t-label">משלוח</span>
+          <span class="t-value">{data.get('shipping','₪0.00')}</span>
+        </div>
+        <div class="t-row exempt">
+          <span class="t-label">{vat_label}</span>
+          <span class="t-value">{vat_value}</span>
+        </div>
+        <div class="t-row grand">
+          <span class="t-label">סה"כ לתשלום</span>
+          <span class="t-value">{data.get('total','')}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="sec-title">פרטי תשלום</div>
+    <div class="pay-box">
+      <div class="pay-row">
+        <span class="pay-label">אמצעי תשלום</span>
+        <span class="pay-value">{payment_method}</span>
+      </div>
+      {payment_row}
+      <div class="pay-row">
+        <span class="pay-label">תאריך חיוב</span>
+        <span class="pay-value">{data.get('orderDate','')}</span>
+      </div>
+      <div class="pay-row">
+        <span class="pay-label">סכום</span>
+        <span class="pay-value">{data.get('total','')}</span>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    <div class="footer-text">{data.get('footerText','')}</div>
+    <div class="page-info">{data.get('documentType','קבלה')} מס' {data.get('receiptNumber','')} | עמוד 1 מתוך 1</div>
+  </div>
+
+</div>
+</body>
+</html>"""
+
+    return html
+
+
+# ─────────────────────────────────────────────
+# RECEIPT: Gmail Sender (runs in background thread)
+# ─────────────────────────────────────────────
+
+def send_receipt_email(to_email: str, subject: str, html_body: str):
+    """V23: Send HTML receipt email via Gmail SMTP. Runs in background thread."""
+    gmail_user = os.environ.get("GMAIL_USER", "")
+    gmail_pass = os.environ.get("GMAIL_APP_PASS", "")
+
+    if not gmail_user or not gmail_pass:
+        print("V23 send_receipt_email: ERROR — GMAIL_USER or GMAIL_APP_PASS not set")
+        return
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = gmail_user
+        msg["To"]      = to_email
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(gmail_user, gmail_pass)
+            server.sendmail(gmail_user, to_email, msg.as_string())
+
+        print(f"V23 send_receipt_email: sent to {to_email}")
+
+    except Exception as e:
+        print(f"V23 send_receipt_email: FAILED — {str(e)}")
+
+
+# ═════════════════════════════════════════════
+# DOCX Helpers
 # ═════════════════════════════════════════════
 
 TYPE_COLORS = {
@@ -484,7 +698,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V22"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V23"})
 
 
 @app.route("/mockup", methods=["POST"])
@@ -593,6 +807,52 @@ def rect():
 
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"Failed to download image: {str(e)}"}), 400
+    except Exception as e:
+        return jsonify({"error": f"Internal error: {str(e)}"}), 500
+
+
+# ═════════════════════════════════════════════
+# ENDPOINT: RECEIPT
+# V23: Fire and forget — returns immediately, sends email in background
+# ═════════════════════════════════════════════
+
+@app.route("/receipt", methods=["POST"])
+def receipt():
+    try:
+        data = request.get_json(force=True)
+
+        # ── validate required fields ──
+        required = ["customerEmail", "customerName", "orderNumber", "receiptNumber", "items", "total"]
+        for field in required:
+            if not data.get(field):
+                return jsonify({"error": f"Missing required field: {field}"}), 400
+
+        # ── build HTML ──
+        html_body = build_receipt_html(data)
+
+        # ── subject line ──
+        doc_type      = data.get("documentType", "קבלה")
+        receipt_num   = data.get("receiptNumber", "")
+        business_name = data.get("businessName", "Artmidnet")
+        subject = f"{doc_type} מספר {receipt_num} מאת {business_name}"
+
+        # ── fire and forget — send in background ──
+        to_email = data.get("customerEmail")
+        thread = threading.Thread(
+            target=send_receipt_email,
+            args=(to_email, subject, html_body),
+            daemon=True
+        )
+        thread.start()
+
+        print(f"V23 /receipt: queued email to {to_email} | receipt={receipt_num} order={data.get('orderNumber')}")
+
+        return jsonify({
+            "status": "ok",
+            "message": f"Receipt queued for {to_email}",
+            "receiptNumber": receipt_num
+        })
+
     except Exception as e:
         return jsonify({"error": f"Internal error: {str(e)}"}), 500
 

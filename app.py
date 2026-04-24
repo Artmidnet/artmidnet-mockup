@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V24
+Artmidnet Mockup Server — app.py V25
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -25,6 +25,7 @@ V21: פרמטרי מסגרת וצל מגיעים מהבקשה (frame_width, fram
 V22: Fix — size_px מוגבל ל-80% מהממד הקטן של ה-mockup — מונע גלישה מחוץ לתמונה
 V23: Added /receipt endpoint — builds HTML receipt and sends via Gmail SMTP (fire and forget)
 V24: Fixed receipt HTML — fully inline styles, table-based layout, proper RTL for Gmail
+V25: Receipt — light header bg, receipt number centered+large, fixed totals/payment direction, translate "None"
 
 Endpoints:
   GET  /health          — health check
@@ -425,54 +426,59 @@ def apply_rect(painting_img: Image.Image, mockup_img: Image.Image, size_px: int 
 # ═════════════════════════════════════════════
 
 def build_receipt_html(data: dict) -> str:
-    """V24: Email-safe RTL receipt — inline styles only, table-based layout."""
+    """V25: RTL receipt — light header, centered receipt number, fixed directions, translate None."""
 
     # ── colors ──
-    C_DARK   = "#1a2e4a"
-    C_GOLD   = "#c9a84c"
-    C_WHITE  = "#ffffff"
-    C_BG     = "#f5f5f5"
-    C_BORDER = "#e0e0e0"
-    C_TEXT   = "#333333"
-    C_MUTED  = "#888888"
-    C_LIGHT  = "#fafafa"
+    C_DARK    = "#1a2e4a"
+    C_GOLD    = "#c9a84c"
+    C_WHITE   = "#ffffff"
+    C_HEADER  = "#f8f4ef"   # V25: בהיר מאוד לheader
+    C_BG      = "#f5f5f5"
+    C_BORDER  = "#e0e0e0"
+    C_TEXT    = "#333333"
+    C_MUTED   = "#888888"
+    C_LIGHT   = "#fafafa"
 
     # ── VAT ──
-    vat_rate = data.get("vatRate", 0)
+    vat_rate  = data.get("vatRate", 0)
     vat_label = f"מע\"מ {int(vat_rate * 100)}%" if (vat_rate and vat_rate > 0) else "מע\"מ (פטור)"
     vat_value = data.get("vatAmount", "₪0.00") if (vat_rate and vat_rate > 0) else "פטור"
 
     # ── logo ──
     logo_url = data.get("logoUrl", "")
     if logo_url:
-        logo_html = f'<img src="{logo_url}" alt="לוגו" width="120" style="display:block;max-height:55px;width:auto;">'
+        logo_html = f'<img src="{logo_url}" alt="לוגו" width="130" style="display:block;max-height:60px;width:auto;">'
     else:
-        logo_html = f'<span style="font-size:18px;font-weight:bold;color:{C_WHITE};">{data.get("businessName","")}</span>'
+        logo_html = f'<span style="font-size:18px;font-weight:bold;color:{C_DARK};">{data.get("businessName","")}</span>'
 
-    # ── items rows ──
+    # ── items rows — V25: translate "None" → "ללא מסגרת" ──
+    def translate_details(details: str) -> str:
+        return details.replace("None", "ללא מסגרת").replace("none", "ללא מסגרת")
+
     items_html = ""
     for i, item in enumerate(data.get("items", [])):
-        row_bg = C_LIGHT if i % 2 == 0 else C_WHITE
+        row_bg  = C_LIGHT if i % 2 == 0 else C_WHITE
+        details = translate_details(item.get('details', ''))
         items_html += f"""
         <tr>
           <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:right;font-size:12px;color:{C_TEXT};background:{row_bg};">{item.get('index','')}</td>
           <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:right;font-size:12px;background:{row_bg};">
             <div style="font-weight:bold;color:{C_DARK};">{item.get('name','')}</div>
-            <div style="font-size:11px;color:{C_MUTED};margin-top:2px;">{item.get('details','')}</div>
+            <div style="font-size:11px;color:{C_MUTED};margin-top:2px;">{details}</div>
           </td>
           <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:center;font-size:12px;color:{C_TEXT};background:{row_bg};">1</td>
-          <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:left;font-size:12px;color:{C_TEXT};background:{row_bg};">{item.get('price','')}</td>
-          <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:left;font-size:12px;font-weight:bold;color:{C_DARK};background:{row_bg};">{item.get('total','')}</td>
+          <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:right;font-size:12px;color:{C_TEXT};background:{row_bg};">{item.get('price','')}</td>
+          <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:right;font-size:12px;font-weight:bold;color:{C_DARK};background:{row_bg};">{item.get('total','')}</td>
         </tr>"""
 
     # ── payment detail row ──
-    payment_details = data.get("paymentDetails", "")
-    payment_detail_row = ""
+    payment_details     = data.get("paymentDetails", "")
+    payment_detail_row  = ""
     if payment_details:
         payment_detail_row = f"""
         <tr>
-          <td style="padding:7px 12px;text-align:right;font-size:12px;color:{C_MUTED};border-bottom:1px solid {C_BORDER};">פירוט</td>
-          <td style="padding:7px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{payment_details}</td>
+          <td style="padding:8px 12px;text-align:right;font-size:12px;color:{C_MUTED};border-bottom:1px solid {C_BORDER};width:50%;">פירוט</td>
+          <td style="padding:8px 12px;text-align:right;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{payment_details}</td>
         </tr>"""
 
     html = f"""<!DOCTYPE html>
@@ -491,15 +497,15 @@ def build_receipt_html(data: dict) -> str:
   <table width="100%" cellpadding="0" cellspacing="0" border="0"
     style="background:{C_WHITE};border:1px solid {C_BORDER};border-radius:4px;">
 
-    <!-- HEADER -->
+    <!-- HEADER — V25: light bg -->
     <tr>
-      <td style="background:{C_DARK};padding:20px 28px;border-radius:4px 4px 0 0;">
+      <td style="background:{C_HEADER};padding:20px 28px;border-radius:4px 4px 0 0;border-bottom:1px solid {C_BORDER};">
         <table width="100%" cellpadding="0" cellspacing="0" border="0">
           <tr>
             <td style="text-align:right;vertical-align:middle;">{logo_html}</td>
             <td style="text-align:left;vertical-align:middle;">
-              <div style="font-size:15px;font-weight:bold;color:{C_WHITE};margin-bottom:4px;">{data.get('businessName','')}</div>
-              <div style="font-size:11px;color:rgba(255,255,255,0.8);line-height:1.7;">
+              <div style="font-size:15px;font-weight:bold;color:{C_DARK};margin-bottom:4px;">{data.get('businessName','')}</div>
+              <div style="font-size:11px;color:#555;line-height:1.8;">
                 ח.פ. {data.get('businessTaxId','')}<br>
                 {data.get('bizAddress','')}<br>
                 {data.get('businessEmail','')} | {data.get('bizPhone','')}
@@ -510,16 +516,24 @@ def build_receipt_html(data: dict) -> str:
       </td>
     </tr>
 
-    <!-- TITLE BAND -->
+    <!-- TITLE BAND — V25: receipt number centered + large -->
     <tr>
-      <td style="background:{C_GOLD};padding:8px 28px;">
+      <td style="background:{C_GOLD};padding:14px 28px;">
         <table width="100%" cellpadding="0" cellspacing="0" border="0">
           <tr>
-            <td style="text-align:right;font-size:13px;font-weight:bold;color:{C_DARK};">
-              {data.get('documentType','קבלה')} מספר {data.get('receiptNumber','')}
+            <!-- שורה 1: מספר קבלה מרוכז -->
+            <td colspan="2" style="text-align:center;padding-bottom:6px;">
+              <span style="font-size:26px;font-weight:bold;color:{C_DARK};">
+                {data.get('documentType','קבלה')} מספר {data.get('receiptNumber','')}
+              </span>
             </td>
-            <td style="text-align:left;font-size:12px;font-weight:600;color:{C_DARK};">
-              הזמנה מספר {data.get('orderNumber','')}
+          </tr>
+          <tr>
+            <!-- שורה 2: מספר הזמנה קטן יותר -->
+            <td colspan="2" style="text-align:center;">
+              <span style="font-size:12px;color:{C_DARK};opacity:0.8;">
+                הזמנה מספר {data.get('orderNumber','')}
+              </span>
             </td>
           </tr>
         </table>
@@ -528,7 +542,7 @@ def build_receipt_html(data: dict) -> str:
 
     <!-- BODY -->
     <tr>
-      <td style="padding:24px 28px;">
+      <td style="padding:24px 28px;background:{C_WHITE};">
 
         <!-- RECIPIENT + DATE -->
         <table width="100%" cellpadding="0" cellspacing="0" border="0"
@@ -548,7 +562,7 @@ def build_receipt_html(data: dict) -> str:
         </table>
 
         <!-- ITEMS SECTION TITLE -->
-        <div style="font-size:10px;font-weight:bold;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">פירוט הרכישה</div>
+        <div style="font-size:10px;font-weight:bold;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;text-align:right;">פירוט הרכישה</div>
 
         <!-- ITEMS TABLE -->
         <table width="100%" cellpadding="0" cellspacing="0" border="0"
@@ -558,35 +572,35 @@ def build_receipt_html(data: dict) -> str:
               <th style="padding:9px 8px;text-align:right;font-size:11px;font-weight:bold;color:{C_WHITE};width:36px;">מק"ט</th>
               <th style="padding:9px 8px;text-align:right;font-size:11px;font-weight:bold;color:{C_WHITE};">פירוט</th>
               <th style="padding:9px 8px;text-align:center;font-size:11px;font-weight:bold;color:{C_WHITE};width:50px;">כמות</th>
-              <th style="padding:9px 8px;text-align:left;font-size:11px;font-weight:bold;color:{C_WHITE};width:80px;">מחיר</th>
-              <th style="padding:9px 8px;text-align:left;font-size:11px;font-weight:bold;color:{C_WHITE};width:80px;">סה"כ</th>
+              <th style="padding:9px 8px;text-align:right;font-size:11px;font-weight:bold;color:{C_WHITE};width:80px;">מחיר</th>
+              <th style="padding:9px 8px;text-align:right;font-size:11px;font-weight:bold;color:{C_WHITE};width:80px;">סה"כ</th>
             </tr>
           </thead>
           <tbody>{items_html}</tbody>
         </table>
 
-        <!-- TOTALS -->
+        <!-- TOTALS — V25: fixed direction, סכום מימין -->
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:20px;">
           <tr>
-            <td width="55%"></td>
-            <td width="45%">
+            <td width="50%"></td>
+            <td width="50%">
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
                 style="border:1px solid {C_BORDER};border-radius:3px;overflow:hidden;">
                 <tr>
-                  <td style="padding:8px 12px;text-align:right;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">סכום ביניים</td>
-                  <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('subtotal','')}</td>
+                  <td style="padding:8px 12px;text-align:right;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('subtotal','')}</td>
+                  <td style="padding:8px 12px;text-align:left;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">סכום ביניים</td>
                 </tr>
                 <tr>
-                  <td style="padding:8px 12px;text-align:right;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">משלוח</td>
-                  <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('shipping','₪0.00')}</td>
+                  <td style="padding:8px 12px;text-align:right;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('shipping','₪0.00')}</td>
+                  <td style="padding:8px 12px;text-align:left;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">משלוח</td>
                 </tr>
                 <tr>
-                  <td style="padding:8px 12px;text-align:right;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_label}</td>
-                  <td style="padding:8px 12px;text-align:left;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_value}</td>
+                  <td style="padding:8px 12px;text-align:right;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_value}</td>
+                  <td style="padding:8px 12px;text-align:left;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_label}</td>
                 </tr>
                 <tr style="background:{C_DARK};">
-                  <td style="padding:10px 12px;text-align:right;font-size:13px;font-weight:bold;color:{C_WHITE};">סה"כ לתשלום</td>
-                  <td style="padding:10px 12px;text-align:left;font-size:14px;font-weight:bold;color:{C_GOLD};">{data.get('total','')}</td>
+                  <td style="padding:10px 12px;text-align:right;font-size:15px;font-weight:bold;color:{C_GOLD};">{data.get('total','')}</td>
+                  <td style="padding:10px 12px;text-align:left;font-size:13px;font-weight:bold;color:{C_WHITE};">סה"כ לתשלום</td>
                 </tr>
               </table>
             </td>
@@ -594,23 +608,23 @@ def build_receipt_html(data: dict) -> str:
         </table>
 
         <!-- PAYMENT SECTION TITLE -->
-        <div style="font-size:10px;font-weight:bold;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">פרטי תשלום</div>
+        <div style="font-size:10px;font-weight:bold;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;text-align:right;">פרטי תשלום</div>
 
-        <!-- PAYMENT TABLE -->
+        <!-- PAYMENT TABLE — V25: fixed direction -->
         <table width="100%" cellpadding="0" cellspacing="0" border="0"
           style="background:{C_BG};border:1px solid {C_BORDER};border-radius:3px;margin-bottom:20px;">
           <tr>
-            <td style="padding:8px 12px;text-align:right;font-size:12px;color:{C_MUTED};border-bottom:1px solid {C_BORDER};">אמצעי תשלום</td>
-            <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('paymentMethod','')}</td>
+            <td style="padding:8px 12px;text-align:right;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};width:50%;">{data.get('paymentMethod','')}</td>
+            <td style="padding:8px 12px;text-align:left;font-size:12px;color:{C_MUTED};border-bottom:1px solid {C_BORDER};">אמצעי תשלום</td>
           </tr>
           {payment_detail_row}
           <tr>
-            <td style="padding:8px 12px;text-align:right;font-size:12px;color:{C_MUTED};border-bottom:1px solid {C_BORDER};">תאריך חיוב</td>
-            <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('orderDate','')}</td>
+            <td style="padding:8px 12px;text-align:right;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('orderDate','')}</td>
+            <td style="padding:8px 12px;text-align:left;font-size:12px;color:{C_MUTED};border-bottom:1px solid {C_BORDER};">תאריך חיוב</td>
           </tr>
           <tr>
-            <td style="padding:8px 12px;text-align:right;font-size:12px;color:{C_MUTED};">סכום</td>
-            <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};">{data.get('total','')}</td>
+            <td style="padding:8px 12px;text-align:right;font-size:12px;font-weight:bold;color:{C_TEXT};">{data.get('total','')}</td>
+            <td style="padding:8px 12px;text-align:left;font-size:12px;color:{C_MUTED};">סכום</td>
           </tr>
         </table>
 
@@ -721,7 +735,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V24"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V25"})
 
 
 @app.route("/mockup", methods=["POST"])

@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V29
+Artmidnet Mockup Server — app.py V30
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -30,6 +30,7 @@ V26: Receipt email — attach PDF (weasyprint) + HTML in body
 V27: Replace weasyprint with xhtml2pdf — no system dependencies required
 V28: Replace xhtml2pdf with fpdf2 — pure Python, no system dependencies, Hebrew TTF font
 V29: Fix RTL — only reverse Hebrew text, English painting names and Artmidnet stay as-is
+V30: Redesign PDF — python-bidi for proper BiDi, beige header with logo, matches HTML email
 
 Endpoints:
   GET  /health          — health check
@@ -662,119 +663,185 @@ def build_receipt_html(data: dict) -> str:
 
 
 # ═════════════════════════════════════════════
-# RECEIPT: PDF Builder (V28 — fpdf2)
+# RECEIPT: PDF Builder (V30 — fpdf2 + python-bidi + new design)
 # ═════════════════════════════════════════════
 
 def build_receipt_pdf(data: dict) -> bytes:
-    """V28: Build PDF receipt using fpdf2 with Hebrew TTF font."""
+    """V30: PDF receipt — python-bidi for proper RTL, design matches HTML email."""
+    from bidi.algorithm import get_display
+    import tempfile
 
-    # ── font path — NotoSansHebrew-Regular.ttf is in repo root ──
+    # ── font path ──
     font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
-    print(f"V28 build_receipt_pdf: font_path={font_path} exists={os.path.exists(font_path)}")
+    print(f"V30 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
 
-    # ── helper: check if text contains Hebrew characters ──
-    def has_hebrew(text: str) -> bool:
-        return any('\u05d0' <= c <= '\u05ea' for c in text)
-
-    # ── helper: reverse text ONLY if it contains Hebrew ──
-    def rtl(text: str) -> str:
+    # ── BiDi helper — proper Unicode BiDi algorithm ──
+    def bidi(text: str) -> str:
         if not text:
             return ""
-        if has_hebrew(text):
-            return text[::-1]
-        return text
+        return get_display(str(text))
 
-    # ── helper: format label+value line (value on left, label on right) ──
-    def row_line(pdf, label: str, value: str, font_size: int = 10):
-        pdf.set_font("Hebrew", size=font_size)
-        pdf.set_x(10)
-        pdf.cell(95, 7, value, align="L")
-        pdf.cell(95, 7, rtl(label), align="R", new_x="LMARGIN", new_y="NEXT")
+    # ── colors ──
+    C_DARK  = (26, 46, 74)    # #1a2e4a
+    C_GOLD  = (201, 168, 76)  # #c9a84c
+    C_HEAD  = (248, 244, 239) # #f8f4ef beige header
+    C_BORD  = (224, 224, 224) # #e0e0e0
+    C_MUTED = (136, 136, 136)
+    C_TEXT  = (50, 50, 50)
+    C_LIGHT = (250, 250, 250)
 
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.add_font("Hebrew", fname=font_path)
+    # ── download logo ──
+    logo_path = None
+    logo_url  = data.get("logoUrl", "")
+    if logo_url:
+        try:
+            r = requests.get(logo_url, timeout=10)
+            r.raise_for_status()
+            suffix = ".png" if "png" in logo_url.lower() else ".jpg"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(r.content)
+                logo_path = tmp.name
+            print(f"V30 logo downloaded: {logo_path}")
+        except Exception as e:
+            print(f"V30 logo download failed: {e}")
 
-    page_w = pdf.w  # typically 210mm for A4
-
-    # ── HEADER BAND — dark background ──
-    pdf.set_fill_color(26, 46, 74)   # #1a2e4a
-    pdf.rect(0, 0, page_w, 28, style="F")
-
-    pdf.set_text_color(201, 168, 76)  # #c9a84c gold
-    pdf.set_font("Hebrew", size=16)
-    business_name = data.get("businessName", "Artmidnet")
-    pdf.set_xy(10, 6)
-    pdf.cell(page_w - 20, 10, rtl(business_name), align="C")
-
-    doc_type     = data.get("documentType", "קבלה")
-    receipt_num  = str(data.get("receiptNumber", ""))
-    pdf.set_font("Hebrew", size=11)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_xy(10, 17)
-    pdf.cell(page_w - 20, 7, rtl(f"{doc_type} מספר {receipt_num}"), align="C")
-
-    # ── BUSINESS INFO ──
-    pdf.set_text_color(80, 80, 80)
-    pdf.set_font("Hebrew", size=8)
-    pdf.set_xy(10, 31)
-    tax_id  = data.get("businessTaxId", "")
-    biz_addr = data.get("bizAddress", "")
-    biz_email = data.get("businessEmail", "")
-    biz_phone = data.get("bizPhone", "")
-    pdf.cell(page_w - 20, 5, f"{biz_email} | {biz_phone} | {rtl(biz_addr)} | {rtl(tax_id)}", align="C")
-
-    # ── SEPARATOR ──
-    pdf.set_draw_color(201, 168, 76)
-    pdf.set_line_width(0.5)
-    pdf.line(10, 38, page_w - 10, 38)
-
-    # ── CUSTOMER + DATE ──
-    pdf.set_y(42)
-    pdf.set_text_color(50, 50, 50)
-
+    # ── data fields ──
+    business_name  = data.get("businessName", "Artmidnet")
+    tax_id         = data.get("businessTaxId", "")
+    biz_addr       = data.get("bizAddress", "")
+    biz_email      = data.get("businessEmail", "")
+    biz_phone      = data.get("bizPhone", "")
+    doc_type       = data.get("documentType", "קבלה")
+    receipt_num    = str(data.get("receiptNumber", ""))
+    order_number   = str(data.get("orderNumber", ""))
     customer_name  = data.get("customerName", "")
     customer_email = data.get("customerEmail", "")
     customer_phone = data.get("customerPhone", "")
     order_date     = data.get("orderDate", "")
-    order_number   = str(data.get("orderNumber", ""))
+    subtotal       = str(data.get("subtotal", ""))
+    shipping       = str(data.get("shipping", "₪0.00"))
+    total          = str(data.get("total", ""))
+    vat_rate       = data.get("vatRate", 0)
+    vat_value      = str(data.get("vatAmount", "פטור")) if (vat_rate and vat_rate > 0) else "פטור"
+    vat_label      = f'מע"מ {int(vat_rate * 100)}%' if (vat_rate and vat_rate > 0) else 'מע"מ (פטור)'
+    payment_method  = str(data.get("paymentMethod", ""))
+    payment_details = str(data.get("paymentDetails", ""))
+    footer_text    = data.get("footerText", "")
+    items          = data.get("items", [])
+
+    # ── init PDF ──
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.add_font("Hebrew", fname=font_path)
+    page_w = pdf.w  # 210mm A4
+
+    # ════════════════════════════════
+    # HEADER — beige bg, logo right, biz info left
+    # ════════════════════════════════
+    header_h = 34
+    pdf.set_fill_color(*C_HEAD)
+    pdf.rect(0, 0, page_w, header_h, style="F")
+
+    # logo (right side)
+    if logo_path:
+        try:
+            pdf.image(logo_path, x=page_w - 55, y=4, h=26)
+        except Exception as e:
+            print(f"V30 logo embed failed: {e}")
+
+    # business name (left side)
+    pdf.set_text_color(*C_DARK)
+    pdf.set_font("Hebrew", size=13)
+    pdf.set_xy(10, 5)
+    pdf.cell(140, 8, business_name)
+
+    # business details (left side)
+    pdf.set_font("Hebrew", size=8)
+    pdf.set_text_color(85, 85, 85)
+    pdf.set_xy(10, 14)
+    pdf.cell(140, 5, f"ח.פ. {tax_id}")
+    pdf.set_xy(10, 19)
+    pdf.cell(140, 5, bidi(biz_addr))
+    pdf.set_xy(10, 24)
+    pdf.cell(140, 5, f"{biz_email} | {biz_phone}")
+
+    # bottom border of header
+    pdf.set_draw_color(*C_BORD)
+    pdf.set_line_width(0.3)
+    pdf.line(0, header_h, page_w, header_h)
+
+    # ════════════════════════════════
+    # GOLD BAND — receipt number centered
+    # ════════════════════════════════
+    gold_y = header_h
+    gold_h = 24
+    pdf.set_fill_color(*C_GOLD)
+    pdf.rect(0, gold_y, page_w, gold_h, style="F")
+
+    pdf.set_text_color(*C_DARK)
+    pdf.set_font("Hebrew", size=18)
+    pdf.set_xy(10, gold_y + 2)
+    pdf.cell(page_w - 20, 12, bidi(f"{doc_type} מספר {receipt_num}"), align="C")
 
     pdf.set_font("Hebrew", size=9)
-    pdf.set_x(10)
-    pdf.cell(95, 6, order_date, align="L")
-    pdf.cell(95, 6, rtl(f"לכבוד: {customer_name}"), align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_xy(10, gold_y + 14)
+    pdf.cell(page_w - 20, 8, bidi(f"הזמנה מספר {order_number}"), align="C")
 
-    pdf.set_x(10)
-    pdf.cell(95, 6, rtl(f"הזמנה: {order_number}"), align="R", new_x="LMARGIN", new_y="NEXT")
+    # ════════════════════════════════
+    # BODY
+    # ════════════════════════════════
+    body_y = gold_y + gold_h + 5
+    pdf.set_y(body_y)
 
-    pdf.set_x(10)
-    pdf.cell(95, 6, customer_email, align="L")
-    pdf.cell(95, 6, customer_phone, align="R", new_x="LMARGIN", new_y="NEXT")
+    # ── customer + date ──
+    pdf.set_font("Hebrew", size=8)
+    pdf.set_text_color(*C_MUTED)
+    pdf.set_xy(10, body_y)
+    pdf.cell(95, 5, "תאריך", align="L")
+    pdf.cell(95, 5, bidi("לכבוד"), align="R", new_x="LMARGIN", new_y="NEXT")
 
-    # ── SEPARATOR ──
-    pdf.set_draw_color(220, 220, 220)
+    pdf.set_font("Hebrew", size=12)
+    pdf.set_text_color(*C_DARK)
+    pdf.set_x(10)
+    pdf.cell(95, 7, order_date, align="L")
+    pdf.cell(95, 7, bidi(customer_name), align="R", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("Hebrew", size=9)
+    pdf.set_text_color(100, 100, 100)
+    pdf.set_x(10)
+    pdf.cell(95, 5, customer_email, align="L")
+    pdf.cell(95, 5, customer_phone, align="R", new_x="LMARGIN", new_y="NEXT")
+
+    # ── separator ──
+    sep_y = pdf.get_y() + 3
+    pdf.set_draw_color(*C_BORD)
     pdf.set_line_width(0.3)
-    y_sep = pdf.get_y() + 2
-    pdf.line(10, y_sep, page_w - 10, y_sep)
-    pdf.set_y(y_sep + 4)
+    pdf.line(10, sep_y, page_w - 10, sep_y)
+    pdf.set_y(sep_y + 4)
 
-    # ── ITEMS TABLE HEADER ──
-    pdf.set_fill_color(26, 46, 74)
+    # ── section label ──
+    pdf.set_font("Hebrew", size=8)
+    pdf.set_text_color(*C_MUTED)
+    pdf.set_x(10)
+    pdf.cell(page_w - 20, 5, bidi('פירוט הרכישה'), align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1)
+
+    # ── items table header ──
+    col_w = [15, 95, 20, 30, 30]
+    headers = ['מק"ט', "פירוט", "כמות", "מחיר", 'סה"כ']
+    pdf.set_fill_color(*C_DARK)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font("Hebrew", size=9)
     pdf.set_x(10)
-    col_widths = [15, 95, 20, 30, 30]  # מק"ט, פירוט, כמות, מחיר, סה"כ
-    headers    = ["מק\"ט", "פירוט", "כמות", "מחיר", "סה\"כ"]
-    for i, (w, h) in enumerate(zip(col_widths, headers)):
-        pdf.cell(w, 7, rtl(h), border=0, align="C", fill=True)
+    for w, h in zip(col_w, headers):
+        pdf.cell(w, 7, bidi(h), border=0, align="C", fill=True)
     pdf.ln()
 
-    # ── ITEMS ROWS ──
-    pdf.set_text_color(50, 50, 50)
-    items = data.get("items", [])
+    # ── items rows ──
     for idx, item in enumerate(items):
-        fill = idx % 2 == 0
-        pdf.set_fill_color(250, 250, 250) if fill else pdf.set_fill_color(255, 255, 255)
+        even = idx % 2 == 0
+        pdf.set_fill_color(*C_LIGHT) if even else pdf.set_fill_color(255, 255, 255)
+        pdf.set_text_color(*C_TEXT)
         pdf.set_font("Hebrew", size=8)
         pdf.set_x(10)
 
@@ -784,69 +851,76 @@ def build_receipt_pdf(data: dict) -> bytes:
         item_total = str(item.get("total", ""))
         details    = item.get("details", "").replace("None", "ללא מסגרת").replace("none", "ללא מסגרת")
 
-        pdf.cell(col_widths[0], 6, item_index, border="B", align="C", fill=fill)
-        # V29: item_name stays as-is (English), details reversed only if Hebrew
-        cell_text = f"{item_name} | {rtl(details)}" if not has_hebrew(item_name) else rtl(f"{item_name} | {details}")
-        pdf.cell(col_widths[1], 6, cell_text, border="B", align="R", fill=fill)
-        pdf.cell(col_widths[2], 6, "1", border="B", align="C", fill=fill)
-        pdf.cell(col_widths[3], 6, item_price, border="B", align="C", fill=fill)
-        pdf.cell(col_widths[4], 6, item_total, border="B", align="C", fill=fill)
+        # V30: bidi handles mixed Hebrew+English correctly
+        cell_text  = bidi(details) + " | " + item_name if details else item_name
+
+        pdf.cell(col_w[0], 6, item_index,  border="B", align="C",  fill=even)
+        pdf.cell(col_w[1], 6, cell_text,   border="B", align="R",  fill=even)
+        pdf.cell(col_w[2], 6, "1",          border="B", align="C",  fill=even)
+        pdf.cell(col_w[3], 6, item_price,  border="B", align="C",  fill=even)
+        pdf.cell(col_w[4], 6, item_total,  border="B", align="C",  fill=even)
         pdf.ln()
 
-    # ── TOTALS ──
+    # ── totals ──
     pdf.ln(4)
-    pdf.set_draw_color(220, 220, 220)
-    pdf.set_line_width(0.3)
+    pdf.set_text_color(*C_TEXT)
 
-    subtotal = data.get("subtotal", "")
-    shipping = data.get("shipping", "0.00")
-    total    = data.get("total", "")
-    vat_rate = data.get("vatRate", 0)
-    vat_value = data.get("vatAmount", "פטור") if (vat_rate and vat_rate > 0) else "פטור"
-    vat_label = f"מע\"מ {int(vat_rate * 100)}%" if (vat_rate and vat_rate > 0) else "מע\"מ (פטור)"
+    def totals_row(label, value, font_size=10, fill=False, bg=None, fg=None):
+        if bg:
+            pdf.set_fill_color(*bg)
+        if fg:
+            pdf.set_text_color(*fg)
+        pdf.set_font("Hebrew", size=font_size)
+        pdf.set_x(10)
+        pdf.cell(95, 8, str(value), align="L", fill=fill)
+        pdf.cell(95, 8, bidi(label), align="R", fill=fill, new_x="LMARGIN", new_y="NEXT")
 
-    left_pad = page_w / 2
-    row_line(pdf, "סכום ביניים", subtotal)
-    row_line(pdf, "משלוח", shipping)
-    row_line(pdf, vat_label, str(vat_value), font_size=9)
+    totals_row("סכום ביניים", subtotal)
+    totals_row("משלוח", shipping)
+    pdf.set_text_color(170, 170, 170)
+    totals_row(vat_label, bidi(vat_value), font_size=9)
+    totals_row('סה"כ לתשלום', total, font_size=13, fill=True, bg=C_DARK, fg=C_GOLD)
 
-    # total row — dark bg
-    pdf.set_fill_color(26, 46, 74)
-    pdf.set_text_color(201, 168, 76)
-    pdf.set_font("Hebrew", size=12)
-    pdf.set_x(10)
-    pdf.cell(95, 9, total, align="L", fill=True)
-    pdf.cell(95, 9, rtl("סה\"כ לתשלום"), align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
-
-    # ── PAYMENT ──
+    # ── payment ──
     pdf.ln(4)
-    pdf.set_text_color(50, 50, 50)
-    pdf.set_font("Hebrew", size=9)
+    pdf.set_text_color(*C_MUTED)
+    pdf.set_font("Hebrew", size=8)
     pdf.set_x(10)
-    pdf.cell(page_w - 20, 6, rtl("פרטי תשלום"), align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(page_w - 20, 5, bidi("פרטי תשלום"), align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1)
 
-    payment_method  = data.get("paymentMethod", "")
-    payment_details = data.get("paymentDetails", "")
+    def payment_row(label, value):
+        pdf.set_text_color(*C_TEXT)
+        pdf.set_font("Hebrew", size=9)
+        pdf.set_x(10)
+        pdf.cell(95, 7, bidi(str(value)), align="L")
+        pdf.cell(95, 7, bidi(label), align="R", new_x="LMARGIN", new_y="NEXT")
 
-    row_line(pdf, "אמצעי תשלום", rtl(payment_method))
+    payment_row("אמצעי תשלום", payment_method)
     if payment_details:
-        row_line(pdf, "פירוט", rtl(payment_details))
-    row_line(pdf, "תאריך חיוב", order_date)
-    row_line(pdf, "סכום", total)
+        payment_row("פירוט", payment_details)
+    payment_row("תאריך חיוב", order_date)
+    payment_row("סכום", total)
 
-    # ── FOOTER ──
-    pdf.set_y(-20)
-    pdf.set_draw_color(26, 46, 74)
+    # ── footer ──
+    pdf.set_y(-18)
+    pdf.set_draw_color(*C_DARK)
     pdf.set_line_width(0.5)
     pdf.line(10, pdf.get_y(), page_w - 10, pdf.get_y())
     pdf.ln(2)
-    pdf.set_text_color(150, 150, 150)
+    pdf.set_text_color(170, 170, 170)
     pdf.set_font("Hebrew", size=8)
-    footer_text = data.get("footerText", "")
     pdf.set_x(10)
-    pdf.cell(page_w - 20, 5, rtl(footer_text), align="R")
+    pdf.cell(page_w - 20, 5, bidi(footer_text), align="R")
 
-    print(f"V28 build_receipt_pdf: PDF built successfully")
+    # ── cleanup logo temp file ──
+    if logo_path and os.path.exists(logo_path):
+        try:
+            os.unlink(logo_path)
+        except Exception:
+            pass
+
+    print(f"V30 build_receipt_pdf: PDF built successfully")
     return pdf.output()
 
 
@@ -952,7 +1026,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V28"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V30"})
 
 
 @app.route("/mockup", methods=["POST"])

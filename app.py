@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V26
+Artmidnet Mockup Server — app.py V27
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -27,6 +27,7 @@ V23: Added /receipt endpoint — builds HTML receipt and sends via Gmail SMTP (f
 V24: Fixed receipt HTML — fully inline styles, table-based layout, proper RTL for Gmail
 V25: Receipt — light header bg, receipt number centered+large, fixed totals/payment direction, translate "None"
 V26: Receipt email — attach PDF (weasyprint) + HTML in body
+V27: Replace weasyprint with xhtml2pdf — no system dependencies required
 
 Endpoints:
   GET  /health          — health check
@@ -53,7 +54,7 @@ import threading
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
-from weasyprint import HTML as WeasyprintHTML
+from xhtml2pdf import pisa
 
 from docx import Document as DocxDocument
 from docx.shared import Pt, RGBColor, Inches
@@ -663,20 +664,28 @@ def build_receipt_html(data: dict) -> str:
 # ─────────────────────────────────────────────
 
 def send_receipt_email(to_email: str, subject: str, html_body: str, receipt_number: str = ""):
-    """V26: Send HTML receipt email via Gmail SMTP with PDF attachment."""
+    """V27: Send HTML receipt email via Gmail SMTP with PDF attachment (xhtml2pdf)."""
     gmail_user = os.environ.get("GMAIL_USER", "")
     gmail_pass = os.environ.get("GMAIL_APP_PASS", "")
 
     if not gmail_user or not gmail_pass:
-        print("V26 send_receipt_email: ERROR — GMAIL_USER or GMAIL_APP_PASS not set")
+        print("V27 send_receipt_email: ERROR — GMAIL_USER or GMAIL_APP_PASS not set")
         return
 
     try:
-        # ── Generate PDF from HTML ──
-        print("V26 send_receipt_email: generating PDF...")
-        pdf_bytes = WeasyprintHTML(string=html_body).write_pdf()
+        # ── Generate PDF from HTML using xhtml2pdf ──
+        print("V27 send_receipt_email: generating PDF...")
+        pdf_buffer = io.BytesIO()
+        pisa_status = pisa.CreatePDF(html_body.encode("utf-8"), dest=pdf_buffer, encoding="utf-8")
+
+        if pisa_status.err:
+            print(f"V27 send_receipt_email: PDF generation error — {pisa_status.err}")
+            pdf_bytes = None
+        else:
+            pdf_bytes = pdf_buffer.getvalue()
+            print(f"V27 send_receipt_email: PDF generated — {len(pdf_bytes)} bytes")
+
         pdf_filename = f"receipt_{receipt_number}.pdf" if receipt_number else "receipt.pdf"
-        print(f"V26 send_receipt_email: PDF generated — {len(pdf_bytes)} bytes")
 
         # ── Build email ──
         msg = MIMEMultipart("mixed")
@@ -687,20 +696,21 @@ def send_receipt_email(to_email: str, subject: str, html_body: str, receipt_numb
         # HTML body
         msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-        # PDF attachment
-        pdf_part = MIMEApplication(pdf_bytes, _subtype="pdf")
-        pdf_part.add_header("Content-Disposition", "attachment", filename=pdf_filename)
-        msg.attach(pdf_part)
+        # PDF attachment (if generated successfully)
+        if pdf_bytes:
+            pdf_part = MIMEApplication(pdf_bytes, _subtype="pdf")
+            pdf_part.add_header("Content-Disposition", "attachment", filename=pdf_filename)
+            msg.attach(pdf_part)
 
         # ── Send ──
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(gmail_user, gmail_pass)
             server.sendmail(gmail_user, to_email, msg.as_string())
 
-        print(f"V26 send_receipt_email: sent to {to_email} with PDF {pdf_filename}")
+        print(f"V27 send_receipt_email: sent to {to_email} with PDF {pdf_filename}")
 
     except Exception as e:
-        print(f"V26 send_receipt_email: FAILED — {str(e)}")
+        print(f"V27 send_receipt_email: FAILED — {str(e)}")
 
 
 # ═════════════════════════════════════════════
@@ -753,7 +763,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V26"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V27"})
 
 
 @app.route("/mockup", methods=["POST"])

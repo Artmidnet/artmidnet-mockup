@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V28
+Artmidnet Mockup Server — app.py V29
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -29,6 +29,7 @@ V25: Receipt — light header bg, receipt number centered+large, fixed totals/pa
 V26: Receipt email — attach PDF (weasyprint) + HTML in body
 V27: Replace weasyprint with xhtml2pdf — no system dependencies required
 V28: Replace xhtml2pdf with fpdf2 — pure Python, no system dependencies, Hebrew TTF font
+V29: Fix RTL — only reverse Hebrew text, English painting names and Artmidnet stay as-is
 
 Endpoints:
   GET  /health          — health check
@@ -671,11 +672,17 @@ def build_receipt_pdf(data: dict) -> bytes:
     font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
     print(f"V28 build_receipt_pdf: font_path={font_path} exists={os.path.exists(font_path)}")
 
-    # ── helper: reverse Hebrew string for RTL rendering ──
+    # ── helper: check if text contains Hebrew characters ──
+    def has_hebrew(text: str) -> bool:
+        return any('\u05d0' <= c <= '\u05ea' for c in text)
+
+    # ── helper: reverse text ONLY if it contains Hebrew ──
     def rtl(text: str) -> str:
         if not text:
             return ""
-        return text[::-1]
+        if has_hebrew(text):
+            return text[::-1]
+        return text
 
     # ── helper: format label+value line (value on left, label on right) ──
     def row_line(pdf, label: str, value: str, font_size: int = 10):
@@ -778,7 +785,9 @@ def build_receipt_pdf(data: dict) -> bytes:
         details    = item.get("details", "").replace("None", "ללא מסגרת").replace("none", "ללא מסגרת")
 
         pdf.cell(col_widths[0], 6, item_index, border="B", align="C", fill=fill)
-        pdf.cell(col_widths[1], 6, rtl(f"{item_name} | {details}"), border="B", align="R", fill=fill)
+        # V29: item_name stays as-is (English), details reversed only if Hebrew
+        cell_text = f"{item_name} | {rtl(details)}" if not has_hebrew(item_name) else rtl(f"{item_name} | {details}")
+        pdf.cell(col_widths[1], 6, cell_text, border="B", align="R", fill=fill)
         pdf.cell(col_widths[2], 6, "1", border="B", align="C", fill=fill)
         pdf.cell(col_widths[3], 6, item_price, border="B", align="C", fill=fill)
         pdf.cell(col_widths[4], 6, item_total, border="B", align="C", fill=fill)

@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V31
+Artmidnet Mockup Server — app.py V32
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -604,20 +604,20 @@ def build_receipt_html(data: dict) -> str:
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
                 style="border:1px solid {C_BORDER};border-radius:3px;overflow:hidden;">
                 <tr>
-                  <td style="padding:8px 12px;text-align:right;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('subtotal','')}</td>
-                  <td style="padding:8px 12px;text-align:left;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">סכום ביניים</td>
+                  <td style="padding:8px 12px;text-align:right;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">סכום ביניים</td>
+                  <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('subtotal','')}</td>
                 </tr>
                 <tr>
-                  <td style="padding:8px 12px;text-align:right;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('shipping','₪0.00')}</td>
-                  <td style="padding:8px 12px;text-align:left;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">משלוח</td>
+                  <td style="padding:8px 12px;text-align:right;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">משלוח</td>
+                  <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('shipping','₪0.00')}</td>
                 </tr>
                 <tr>
-                  <td style="padding:8px 12px;text-align:right;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_value}</td>
-                  <td style="padding:8px 12px;text-align:left;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_label}</td>
+                  <td style="padding:8px 12px;text-align:right;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_label}</td>
+                  <td style="padding:8px 12px;text-align:left;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_value}</td>
                 </tr>
                 <tr style="background:{C_DARK};">
-                  <td style="padding:10px 12px;text-align:right;font-size:15px;font-weight:bold;color:{C_GOLD};">{data.get('total','')}</td>
-                  <td style="padding:10px 12px;text-align:left;font-size:13px;font-weight:bold;color:{C_WHITE};">סה"כ לתשלום</td>
+                  <td style="padding:10px 12px;text-align:right;font-size:13px;font-weight:bold;color:{C_WHITE};">סה"כ לתשלום</td>
+                  <td style="padding:10px 12px;text-align:left;font-size:15px;font-weight:bold;color:{C_GOLD};">{data.get('total','')}</td>
                 </tr>
               </table>
             </td>
@@ -682,7 +682,7 @@ def build_receipt_pdf(data: dict) -> bytes:
 
     # ── font path ──
     font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
-    print(f"V31 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
+    print(f"V32 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
 
     # ── RTL helpers ──
     def has_hebrew(text: str) -> bool:
@@ -840,9 +840,10 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.cell(page_w - 20, 5, bidi('פירוט הרכישה'), align="R", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(1)
 
-    # ── items table header ──
-    col_w = [15, 95, 20, 30, 30]
-    headers = ['מק"ט', "פירוט", "כמות", "מחיר", 'סה"כ']
+    # ── items table header — V32: reversed column order for RTL layout ──
+    # visual RTL order (left→right on page): סה"כ | מחיר | כמות | פירוט | מק"ט
+    col_w   = [30, 30, 20, 95, 15]
+    headers = ['סה"כ', "מחיר", "כמות", "פירוט", 'מק"ט']
     pdf.set_fill_color(*C_DARK)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font("Hebrew", size=9)
@@ -865,48 +866,27 @@ def build_receipt_pdf(data: dict) -> bytes:
         item_total = str(item.get("total", ""))
         details    = item.get("details", "").replace("None", "ללא מסגרת").replace("none", "ללא מסגרת")
 
-        # V31: split details into parts, reverse word order within each part,
-        # reverse Hebrew words character-by-character, keep numbers/dimensions intact
-        # details format: "60x50 ס"מ | הדפס אמנות | ללא מסגרת" (pipe-separated)
-        def reverse_word(w: str) -> str:
-            """Reverse a single word only if it is purely Hebrew."""
-            if all(not c.isascii() and not c.isdigit() for c in w if c != " "):
-                return w[::-1]
-            # mixed or ASCII/digits — keep as-is
-            return w
+        # V32: reverse PART ORDER only — PDF viewer bidi handles character display
+        parts = [p.strip() for p in details.split("|")] if details else []
+        details_rtl = " | ".join(reversed(parts)) if parts else ""
 
-        def format_details_rtl(raw: str) -> str:
-            if not raw:
-                return ""
-            parts = [p.strip() for p in raw.split("|")]
-            result_parts = []
-            for part in parts:
-                words = part.split()
-                # reverse each word if Hebrew, then reverse word ORDER for RTL
-                processed = [reverse_word(w) for w in words]
-                result_parts.append(" ".join(reversed(processed)))
-            # reverse part order for RTL reading
-            return " | ".join(reversed(result_parts))
-
-        details_rtl = format_details_rtl(details)
-
-        # first line — name + price + total
-        pdf.cell(col_w[0], 6, item_index,   border=0,   align="C",  fill=even)
-        pdf.cell(col_w[1], 6, item_name,    border=0,   align="L",  fill=even)
+        # V32: reversed column order matches header (סה"כ left, מק"ט right)
+        pdf.cell(col_w[0], 6, item_total,   border=0,   align="C",  fill=even)
+        pdf.cell(col_w[1], 6, item_price,   border=0,   align="C",  fill=even)
         pdf.cell(col_w[2], 6, "1",           border=0,   align="C",  fill=even)
-        pdf.cell(col_w[3], 6, item_price,   border=0,   align="C",  fill=even)
-        pdf.cell(col_w[4], 6, item_total,   border=0,   align="C",  fill=even)
+        pdf.cell(col_w[3], 6, item_name,    border=0,   align="L",  fill=even)
+        pdf.cell(col_w[4], 6, item_index,   border=0,   align="C",  fill=even)
         pdf.ln()
-        # second line — Hebrew details (right-aligned, muted, smaller)
+        # second line — Hebrew details right-aligned in the wide פירוט column
         if details_rtl:
             pdf.set_font("Hebrew", size=7)
             pdf.set_text_color(*C_MUTED)
             pdf.set_x(10)
-            pdf.cell(col_w[0], 5, "",          border="B", align="C",  fill=even)
-            pdf.cell(col_w[1], 5, details_rtl, border="B", align="R",  fill=even)
-            pdf.cell(col_w[2], 5, "",           border="B", align="C",  fill=even)
-            pdf.cell(col_w[3], 5, "",           border="B", align="C",  fill=even)
-            pdf.cell(col_w[4], 5, "",           border="B", align="C",  fill=even)
+            pdf.cell(col_w[0], 5, "",           border="B", align="C", fill=even)
+            pdf.cell(col_w[1], 5, "",           border="B", align="C", fill=even)
+            pdf.cell(col_w[2], 5, "",           border="B", align="C", fill=even)
+            pdf.cell(col_w[3], 5, details_rtl,  border="B", align="R", fill=even)
+            pdf.cell(col_w[4], 5, "",           border="B", align="C", fill=even)
             pdf.ln()
             pdf.set_font("Hebrew", size=8)
             pdf.set_text_color(*C_TEXT)
@@ -977,7 +957,7 @@ def build_receipt_pdf(data: dict) -> bytes:
         except Exception:
             pass
 
-    print(f"V31 build_receipt_pdf: PDF built successfully")
+    print(f"V32 build_receipt_pdf: PDF built successfully")
     return pdf.output()
 
 
@@ -1083,7 +1063,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V31"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V32"})
 
 
 @app.route("/mockup", methods=["POST"])

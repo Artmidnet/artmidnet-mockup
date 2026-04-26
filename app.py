@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V35
+Artmidnet Mockup Server — app.py V37
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -682,7 +682,7 @@ def build_receipt_pdf(data: dict) -> bytes:
 
     # ── font path ──
     font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
-    print(f"V35 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
+    print(f"V37 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
 
     # ── RTL helpers ──
     def has_hebrew(text: str) -> bool:
@@ -768,7 +768,7 @@ def build_receipt_pdf(data: dict) -> bytes:
     # ════════════════════════════════
     # HEADER — beige bg, logo right, biz info left
     # ════════════════════════════════
-    header_h = 34
+    header_h = 28
     pdf.set_fill_color(*C_HEAD)
     pdf.rect(0, 0, page_w, header_h, style="F")
 
@@ -820,21 +820,21 @@ def build_receipt_pdf(data: dict) -> bytes:
     # ════════════════════════════════
     # BODY
     # ════════════════════════════════
-    body_y = gold_y + gold_h + 3
+    body_y = gold_y + gold_h + 2
     pdf.set_y(body_y)
 
     # ── customer + date ──
     pdf.set_font("Hebrew", size=8)
     pdf.set_text_color(*C_MUTED)
     pdf.set_xy(10, body_y)
-    pdf.cell(95, 5, "תאריך", align="L")
-    pdf.cell(95, 5, bidi("לכבוד"), align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(95, 4, "תאריך", align="L")
+    pdf.cell(95, 4, bidi("לכבוד"), align="R", new_x="LMARGIN", new_y="NEXT")
 
-    pdf.set_font("Hebrew", size=12)
+    pdf.set_font("Hebrew", size=11)
     pdf.set_text_color(*C_DARK)
     pdf.set_x(10)
-    pdf.cell(95, 6, order_date, align="L")
-    pdf.cell(95, 6, bidi(customer_name), align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(95, 5, order_date, align="L")
+    pdf.cell(95, 5, bidi(customer_name), align="R", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Hebrew", size=9)
     pdf.set_text_color(100, 100, 100)
@@ -843,11 +843,11 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.cell(95, 5, customer_phone, align="R", new_x="LMARGIN", new_y="NEXT")
 
     # ── separator ──
-    sep_y = pdf.get_y() + 2
+    sep_y = pdf.get_y() + 1
     pdf.set_draw_color(*C_BORD)
     pdf.set_line_width(0.3)
     pdf.line(10, sep_y, page_w - 10, sep_y)
-    pdf.set_y(sep_y + 2)
+    pdf.set_y(sep_y + 1)
 
     # ── section label ──
     pdf.set_font("Hebrew", size=8)
@@ -872,7 +872,7 @@ def build_receipt_pdf(data: dict) -> bytes:
         even = idx % 2 == 0
         pdf.set_fill_color(*C_LIGHT) if even else pdf.set_fill_color(255, 255, 255)
         pdf.set_text_color(*C_TEXT)
-        pdf.set_font("Hebrew", size=8)
+        pdf.set_font("Hebrew", size=10)
         pdf.set_x(10)
 
         item_index = str(item.get("index", ""))
@@ -893,16 +893,16 @@ def build_receipt_pdf(data: dict) -> bytes:
         pdf.ln()
         # second line — Hebrew details right-aligned in the wide פירוט column
         if details_rtl:
-            pdf.set_font("Hebrew", size=7)
-            pdf.set_text_color(*C_MUTED)
+            pdf.set_font("Hebrew", size=9)
+            pdf.set_text_color(*C_DARK)
             pdf.set_x(10)
-            pdf.cell(col_w[0], 5, "",           border="B", align="C", fill=even)
-            pdf.cell(col_w[1], 5, "",           border="B", align="C", fill=even)
-            pdf.cell(col_w[2], 5, "",           border="B", align="C", fill=even)
-            pdf.cell(col_w[3], 5, details_rtl,  border="B", align="R", fill=even)
-            pdf.cell(col_w[4], 5, "",           border="B", align="C", fill=even)
+            pdf.cell(col_w[0], 6, "",           border="B", align="C", fill=even)
+            pdf.cell(col_w[1], 6, "",           border="B", align="C", fill=even)
+            pdf.cell(col_w[2], 6, "",           border="B", align="C", fill=even)
+            pdf.cell(col_w[3], 6, details_rtl,  border="B", align="R", fill=even)
+            pdf.cell(col_w[4], 6, "",           border="B", align="C", fill=even)
             pdf.ln()
-            pdf.set_font("Hebrew", size=8)
+            pdf.set_font("Hebrew", size=10)
             pdf.set_text_color(*C_TEXT)
         else:
             pdf.set_x(10)
@@ -911,10 +911,10 @@ def build_receipt_pdf(data: dict) -> bytes:
             pdf.ln()
 
     # ── totals ──
-    pdf.ln(2)
+    pdf.ln(1)
     pdf.set_text_color(*C_TEXT)
 
-    def totals_row(label, value, font_size=10, fill=False, bg=None, fg=None):
+    def totals_row(label, value, font_size=11, fill=False, bg=None, fg=None):
         # V34: totals only in right half of page (matches HTML email layout)
         half = page_w / 2
         if bg:
@@ -924,11 +924,11 @@ def build_receipt_pdf(data: dict) -> bytes:
         pdf.set_font("Hebrew", size=font_size)
         pdf.set_x(10)
         # left spacer (fills left half)
-        pdf.cell(half - 10, 8, "", fill=False)
+        pdf.cell(half - 10, 7, "", fill=False)
         # value (left side of right half)
-        pdf.cell((half - 10) / 2, 8, str(value), align="L", fill=fill)
+        pdf.cell((half - 10) / 2, 7, str(value), align="L", fill=fill)
         # label (right side of right half)
-        pdf.cell((half - 10) / 2, 8, bidi(label), align="R", fill=fill, new_x="LMARGIN", new_y="NEXT")
+        pdf.cell((half - 10) / 2, 7, bidi(label), align="R", fill=fill, new_x="LMARGIN", new_y="NEXT")
 
     totals_row("סכום ביניים", subtotal)
     totals_row("משלוח", shipping)
@@ -937,7 +937,7 @@ def build_receipt_pdf(data: dict) -> bytes:
     totals_row('סה"כ לתשלום', total, font_size=13, fill=True, bg=C_DARK, fg=C_GOLD)
 
     # ── payment ──
-    pdf.ln(2)
+    pdf.ln(1)
     pdf.set_text_color(*C_MUTED)
     pdf.set_font("Hebrew", size=8)
     pdf.set_x(10)
@@ -945,7 +945,7 @@ def build_receipt_pdf(data: dict) -> bytes:
 
     def payment_row(label, value):
         pdf.set_text_color(*C_TEXT)
-        pdf.set_font("Hebrew", size=9)
+        pdf.set_font("Hebrew", size=10)
         pdf.set_x(10)
         # value: use bidi only if Hebrew, otherwise show as-is (e.g. PayPal, credit card)
         val_str = str(value)
@@ -958,8 +958,8 @@ def build_receipt_pdf(data: dict) -> bytes:
     payment_row("תאריך חיוב", order_date)
     payment_row("סכום", total)
 
-    # ── footer ──
-    pdf.set_y(-18)
+    # ── footer — V37: inline, no set_y(-18) which caused page 2 ──
+    pdf.ln(3)
     pdf.set_draw_color(*C_DARK)
     pdf.set_line_width(0.5)
     pdf.line(10, pdf.get_y(), page_w - 10, pdf.get_y())
@@ -967,7 +967,7 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.set_text_color(170, 170, 170)
     pdf.set_font("Hebrew", size=8)
     pdf.set_x(10)
-    pdf.cell(page_w - 20, 5, smart_bidi(footer_text), align="R")  # V35: smart_bidi keeps Artmidnet intact
+    pdf.cell(page_w - 20, 5, smart_bidi(footer_text), align="R")
 
     # ── cleanup logo temp file ──
     if logo_path and os.path.exists(logo_path):
@@ -976,7 +976,7 @@ def build_receipt_pdf(data: dict) -> bytes:
         except Exception:
             pass
 
-    print(f"V35 build_receipt_pdf: PDF built successfully")
+    print(f"V37 build_receipt_pdf: PDF built successfully")
     return pdf.output()
 
 
@@ -1082,7 +1082,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V35"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V37"})
 
 
 @app.route("/mockup", methods=["POST"])

@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V30
+Artmidnet Mockup Server — app.py V31
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -682,7 +682,7 @@ def build_receipt_pdf(data: dict) -> bytes:
 
     # ── font path ──
     font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
-    print(f"V30 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
+    print(f"V31 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
 
     # ── RTL helpers ──
     def has_hebrew(text: str) -> bool:
@@ -865,8 +865,30 @@ def build_receipt_pdf(data: dict) -> bytes:
         item_total = str(item.get("total", ""))
         details    = item.get("details", "").replace("None", "ללא מסגרת").replace("none", "ללא מסגרת")
 
-        # V30: item_name (English) on top line, Hebrew details below — no mixing
-        details_rtl = bidi(details) if details else ""
+        # V31: split details into parts, reverse word order within each part,
+        # reverse Hebrew words character-by-character, keep numbers/dimensions intact
+        # details format: "60x50 ס"מ | הדפס אמנות | ללא מסגרת" (pipe-separated)
+        def reverse_word(w: str) -> str:
+            """Reverse a single word only if it is purely Hebrew."""
+            if all(not c.isascii() and not c.isdigit() for c in w if c != " "):
+                return w[::-1]
+            # mixed or ASCII/digits — keep as-is
+            return w
+
+        def format_details_rtl(raw: str) -> str:
+            if not raw:
+                return ""
+            parts = [p.strip() for p in raw.split("|")]
+            result_parts = []
+            for part in parts:
+                words = part.split()
+                # reverse each word if Hebrew, then reverse word ORDER for RTL
+                processed = [reverse_word(w) for w in words]
+                result_parts.append(" ".join(reversed(processed)))
+            # reverse part order for RTL reading
+            return " | ".join(reversed(result_parts))
+
+        details_rtl = format_details_rtl(details)
 
         # first line — name + price + total
         pdf.cell(col_w[0], 6, item_index,   border=0,   align="C",  fill=even)
@@ -955,7 +977,7 @@ def build_receipt_pdf(data: dict) -> bytes:
         except Exception:
             pass
 
-    print(f"V30 build_receipt_pdf: PDF built successfully")
+    print(f"V31 build_receipt_pdf: PDF built successfully")
     return pdf.output()
 
 
@@ -1061,7 +1083,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V30"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V31"})
 
 
 @app.route("/mockup", methods=["POST"])

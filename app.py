@@ -54,9 +54,19 @@ import datetime
 import os
 import smtplib
 import threading
+import sys
+import types
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
+
+# V30: inject mock bidi module so fpdf2 never tries to import python-bidi
+_bidi_pkg  = types.ModuleType("bidi")
+_bidi_algo = types.ModuleType("bidi.algorithm")
+_bidi_algo.get_display = lambda text, **kwargs: text
+sys.modules.setdefault("bidi",           _bidi_pkg)
+sys.modules.setdefault("bidi.algorithm", _bidi_algo)
+
 from fpdf import FPDF
 
 from docx import Document as DocxDocument
@@ -667,19 +677,23 @@ def build_receipt_html(data: dict) -> str:
 # ═════════════════════════════════════════════
 
 def build_receipt_pdf(data: dict) -> bytes:
-    """V30: PDF receipt — python-bidi for proper RTL, design matches HTML email."""
-    from bidi.algorithm import get_display
+    """V30: PDF receipt — manual RTL reversal, no python-bidi dependency."""
     import tempfile
 
     # ── font path ──
     font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
     print(f"V30 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
 
-    # ── BiDi helper — proper Unicode BiDi algorithm ──
+    # ── RTL helpers ──
+    def has_hebrew(text: str) -> bool:
+        return any('א' <= c <= 'ת' for c in str(text))
+
     def bidi(text: str) -> str:
+        """Reverse text only if it contains Hebrew — fpdf2 renders LTR so we pre-reverse."""
         if not text:
             return ""
-        return get_display(str(text))
+        t = str(text)
+        return t[::-1] if has_hebrew(t) else t
 
     # ── colors ──
     C_DARK  = (26, 46, 74)    # #1a2e4a
@@ -851,15 +865,34 @@ def build_receipt_pdf(data: dict) -> bytes:
         item_total = str(item.get("total", ""))
         details    = item.get("details", "").replace("None", "ללא מסגרת").replace("none", "ללא מסגרת")
 
-        # V30: bidi handles mixed Hebrew+English correctly
-        cell_text  = bidi(details) + " | " + item_name if details else item_name
+        # V30: item_name (English) on top line, Hebrew details below — no mixing
+        details_rtl = bidi(details) if details else ""
 
-        pdf.cell(col_w[0], 6, item_index,  border="B", align="C",  fill=even)
-        pdf.cell(col_w[1], 6, cell_text,   border="B", align="R",  fill=even)
-        pdf.cell(col_w[2], 6, "1",          border="B", align="C",  fill=even)
-        pdf.cell(col_w[3], 6, item_price,  border="B", align="C",  fill=even)
-        pdf.cell(col_w[4], 6, item_total,  border="B", align="C",  fill=even)
+        # first line — name + price + total
+        pdf.cell(col_w[0], 6, item_index,   border=0,   align="C",  fill=even)
+        pdf.cell(col_w[1], 6, item_name,    border=0,   align="L",  fill=even)
+        pdf.cell(col_w[2], 6, "1",           border=0,   align="C",  fill=even)
+        pdf.cell(col_w[3], 6, item_price,   border=0,   align="C",  fill=even)
+        pdf.cell(col_w[4], 6, item_total,   border=0,   align="C",  fill=even)
         pdf.ln()
+        # second line — Hebrew details (right-aligned, muted, smaller)
+        if details_rtl:
+            pdf.set_font("Hebrew", size=7)
+            pdf.set_text_color(*C_MUTED)
+            pdf.set_x(10)
+            pdf.cell(col_w[0], 5, "",          border="B", align="C",  fill=even)
+            pdf.cell(col_w[1], 5, details_rtl, border="B", align="R",  fill=even)
+            pdf.cell(col_w[2], 5, "",           border="B", align="C",  fill=even)
+            pdf.cell(col_w[3], 5, "",           border="B", align="C",  fill=even)
+            pdf.cell(col_w[4], 5, "",           border="B", align="C",  fill=even)
+            pdf.ln()
+            pdf.set_font("Hebrew", size=8)
+            pdf.set_text_color(*C_TEXT)
+        else:
+            pdf.set_x(10)
+            for w in col_w:
+                pdf.cell(w, 1, "", border="B", fill=even)
+            pdf.ln()
 
     # ── totals ──
     pdf.ln(4)
@@ -893,7 +926,9 @@ def build_receipt_pdf(data: dict) -> bytes:
         pdf.set_text_color(*C_TEXT)
         pdf.set_font("Hebrew", size=9)
         pdf.set_x(10)
-        pdf.cell(95, 7, bidi(str(value)), align="L")
+        # value: use bidi only if Hebrew, otherwise show as-is (e.g. PayPal, credit card)
+        val_str = str(value)
+        pdf.cell(95, 7, bidi(val_str) if has_hebrew(val_str) else val_str, align="L")
         pdf.cell(95, 7, bidi(label), align="R", new_x="LMARGIN", new_y="NEXT")
 
     payment_row("אמצעי תשלום", payment_method)

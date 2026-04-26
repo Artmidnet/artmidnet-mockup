@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V33
+Artmidnet Mockup Server — app.py V34
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -682,7 +682,7 @@ def build_receipt_pdf(data: dict) -> bytes:
 
     # ── font path ──
     font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
-    print(f"V33 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
+    print(f"V34 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
 
     # ── RTL helpers ──
     def has_hebrew(text: str) -> bool:
@@ -759,7 +759,7 @@ def build_receipt_pdf(data: dict) -> bytes:
     # logo (right side)
     if logo_path:
         try:
-            pdf.image(logo_path, x=page_w - 55, y=4, h=26)
+            pdf.image(logo_path, x=page_w/2 - 20, y=5, h=22)  # V34: centered, smaller
         except Exception as e:
             print(f"V30 logo embed failed: {e}")
 
@@ -901,14 +901,20 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.set_text_color(*C_TEXT)
 
     def totals_row(label, value, font_size=10, fill=False, bg=None, fg=None):
+        # V34: totals only in right half of page (matches HTML email layout)
+        half = page_w / 2
         if bg:
             pdf.set_fill_color(*bg)
         if fg:
             pdf.set_text_color(*fg)
         pdf.set_font("Hebrew", size=font_size)
         pdf.set_x(10)
-        pdf.cell(95, 8, str(value), align="L", fill=fill)
-        pdf.cell(95, 8, bidi(label), align="R", fill=fill, new_x="LMARGIN", new_y="NEXT")
+        # left spacer (fills left half)
+        pdf.cell(half - 10, 8, "", fill=False)
+        # value (left side of right half)
+        pdf.cell((half - 10) / 2, 8, str(value), align="L", fill=fill)
+        # label (right side of right half)
+        pdf.cell((half - 10) / 2, 8, bidi(label), align="R", fill=fill, new_x="LMARGIN", new_y="NEXT")
 
     totals_row("סכום ביניים", subtotal)
     totals_row("משלוח", shipping)
@@ -957,7 +963,7 @@ def build_receipt_pdf(data: dict) -> bytes:
         except Exception:
             pass
 
-    print(f"V33 build_receipt_pdf: PDF built successfully")
+    print(f"V34 build_receipt_pdf: PDF built successfully")
     return pdf.output()
 
 
@@ -1063,7 +1069,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V33"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V34"})
 
 
 @app.route("/mockup", methods=["POST"])

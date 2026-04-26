@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V34
+Artmidnet Mockup Server — app.py V35
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -682,18 +682,34 @@ def build_receipt_pdf(data: dict) -> bytes:
 
     # ── font path ──
     font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
-    print(f"V34 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
+    print(f"V35 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
 
     # ── RTL helpers ──
     def has_hebrew(text: str) -> bool:
         return any('א' <= c <= 'ת' for c in str(text))
 
     def bidi(text: str) -> str:
-        """Reverse text only if it contains Hebrew — fpdf2 renders LTR so we pre-reverse."""
+        """Pre-reverse Hebrew text so fpdf2 RTL font renders it correctly."""
         if not text:
             return ""
         t = str(text)
         return t[::-1] if has_hebrew(t) else t
+
+    def smart_bidi(text: str) -> str:
+        """V35: Handle mixed Hebrew+Latin+numbers — reverse Hebrew words, keep rest, reverse word order."""
+        if not text:
+            return ""
+        words = str(text).split(" ")
+        processed = [w[::-1] if has_hebrew(w) else w for w in words]
+        return " ".join(reversed(processed))
+
+    def details_bidi(raw: str) -> str:
+        """V35: Split details by pipe, smart_bidi each part, reverse part order."""
+        if not raw:
+            return ""
+        parts = [p.strip() for p in raw.split("|")]
+        processed = [smart_bidi(p) for p in parts]
+        return " | ".join(reversed(processed))
 
     # ── colors ──
     C_DARK  = (26, 46, 74)    # #1a2e4a
@@ -804,7 +820,7 @@ def build_receipt_pdf(data: dict) -> bytes:
     # ════════════════════════════════
     # BODY
     # ════════════════════════════════
-    body_y = gold_y + gold_h + 5
+    body_y = gold_y + gold_h + 3
     pdf.set_y(body_y)
 
     # ── customer + date ──
@@ -817,8 +833,8 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.set_font("Hebrew", size=12)
     pdf.set_text_color(*C_DARK)
     pdf.set_x(10)
-    pdf.cell(95, 7, order_date, align="L")
-    pdf.cell(95, 7, bidi(customer_name), align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(95, 6, order_date, align="L")
+    pdf.cell(95, 6, bidi(customer_name), align="R", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Hebrew", size=9)
     pdf.set_text_color(100, 100, 100)
@@ -827,18 +843,17 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.cell(95, 5, customer_phone, align="R", new_x="LMARGIN", new_y="NEXT")
 
     # ── separator ──
-    sep_y = pdf.get_y() + 3
+    sep_y = pdf.get_y() + 2
     pdf.set_draw_color(*C_BORD)
     pdf.set_line_width(0.3)
     pdf.line(10, sep_y, page_w - 10, sep_y)
-    pdf.set_y(sep_y + 4)
+    pdf.set_y(sep_y + 2)
 
     # ── section label ──
     pdf.set_font("Hebrew", size=8)
     pdf.set_text_color(*C_MUTED)
     pdf.set_x(10)
     pdf.cell(page_w - 20, 5, bidi('פירוט הרכישה'), align="R", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(1)
 
     # ── items table header — V32: reversed column order for RTL layout ──
     # visual RTL order (left→right on page): סה"כ | מחיר | כמות | פירוט | מק"ט
@@ -866,9 +881,8 @@ def build_receipt_pdf(data: dict) -> bytes:
         item_total = str(item.get("total", ""))
         details    = item.get("details", "").replace("None", "ללא מסגרת").replace("none", "ללא מסגרת")
 
-        # V32: reverse PART ORDER only — PDF viewer bidi handles character display
-        parts = [p.strip() for p in details.split("|")] if details else []
-        details_rtl = " | ".join(parts) if parts else ""  # V33: natural order, PDF viewer renders RTL
+        # V35: details_bidi handles word-level RTL and part order
+        details_rtl = details_bidi(details)
 
         # V32: reversed column order matches header (סה"כ left, מק"ט right)
         pdf.cell(col_w[0], 6, item_total,   border=0,   align="C",  fill=even)
@@ -897,7 +911,7 @@ def build_receipt_pdf(data: dict) -> bytes:
             pdf.ln()
 
     # ── totals ──
-    pdf.ln(4)
+    pdf.ln(2)
     pdf.set_text_color(*C_TEXT)
 
     def totals_row(label, value, font_size=10, fill=False, bg=None, fg=None):
@@ -923,12 +937,11 @@ def build_receipt_pdf(data: dict) -> bytes:
     totals_row('סה"כ לתשלום', total, font_size=13, fill=True, bg=C_DARK, fg=C_GOLD)
 
     # ── payment ──
-    pdf.ln(4)
+    pdf.ln(2)
     pdf.set_text_color(*C_MUTED)
     pdf.set_font("Hebrew", size=8)
     pdf.set_x(10)
     pdf.cell(page_w - 20, 5, bidi("פרטי תשלום"), align="R", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(1)
 
     def payment_row(label, value):
         pdf.set_text_color(*C_TEXT)
@@ -954,7 +967,7 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.set_text_color(170, 170, 170)
     pdf.set_font("Hebrew", size=8)
     pdf.set_x(10)
-    pdf.cell(page_w - 20, 5, bidi(footer_text), align="R")
+    pdf.cell(page_w - 20, 5, smart_bidi(footer_text), align="R")  # V35: smart_bidi keeps Artmidnet intact
 
     # ── cleanup logo temp file ──
     if logo_path and os.path.exists(logo_path):
@@ -963,7 +976,7 @@ def build_receipt_pdf(data: dict) -> bytes:
         except Exception:
             pass
 
-    print(f"V34 build_receipt_pdf: PDF built successfully")
+    print(f"V35 build_receipt_pdf: PDF built successfully")
     return pdf.output()
 
 
@@ -1069,7 +1082,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V34"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V35"})
 
 
 @app.route("/mockup", methods=["POST"])

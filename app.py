@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V32
+Artmidnet Mockup Server — app.py V33
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -682,7 +682,7 @@ def build_receipt_pdf(data: dict) -> bytes:
 
     # ── font path ──
     font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
-    print(f"V32 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
+    print(f"V33 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
 
     # ── RTL helpers ──
     def has_hebrew(text: str) -> bool:
@@ -868,13 +868,13 @@ def build_receipt_pdf(data: dict) -> bytes:
 
         # V32: reverse PART ORDER only — PDF viewer bidi handles character display
         parts = [p.strip() for p in details.split("|")] if details else []
-        details_rtl = " | ".join(reversed(parts)) if parts else ""
+        details_rtl = " | ".join(parts) if parts else ""  # V33: natural order, PDF viewer renders RTL
 
         # V32: reversed column order matches header (סה"כ left, מק"ט right)
         pdf.cell(col_w[0], 6, item_total,   border=0,   align="C",  fill=even)
         pdf.cell(col_w[1], 6, item_price,   border=0,   align="C",  fill=even)
         pdf.cell(col_w[2], 6, "1",           border=0,   align="C",  fill=even)
-        pdf.cell(col_w[3], 6, item_name,    border=0,   align="L",  fill=even)
+        pdf.cell(col_w[3], 6, item_name,    border=0,   align="R",  fill=even)
         pdf.cell(col_w[4], 6, item_index,   border=0,   align="C",  fill=even)
         pdf.ln()
         # second line — Hebrew details right-aligned in the wide פירוט column
@@ -957,7 +957,7 @@ def build_receipt_pdf(data: dict) -> bytes:
         except Exception:
             pass
 
-    print(f"V32 build_receipt_pdf: PDF built successfully")
+    print(f"V33 build_receipt_pdf: PDF built successfully")
     return pdf.output()
 
 
@@ -1063,7 +1063,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V32"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V33"})
 
 
 @app.route("/mockup", methods=["POST"])

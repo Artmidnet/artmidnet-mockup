@@ -1,46 +1,9 @@
 """
-Artmidnet Mockup Server — app.py V37
+Artmidnet Mockup Server — app.py V38
 ------------------------------------
-V1:  Basic mockup generation (stretch + adapt modes)
-V2:  CORS support, health check endpoint
-V3:  Added /layers-report endpoint — generates DOCX, returns file directly
-V4:  /layers-report now returns base64 JSON instead of file download
-V5:  Page name displayed prominently as main title in report header
-V6:  Added /cms-report endpoint — generates CMS Schema DOCX, returns base64 JSON
-V7:  MERGE — restored /noframe, /zoom, /rect from V2 (were missing in V6)
-V8:  Fixed apply_adapt — shadow paste array shape mismatch (broadcast error)
-V9:  Fixed apply_zoom — use detect_outer_frame+detect_inner_canvas instead of detect_white_area
-V10: Fixed apply_zoom — clip painting to inner canvas bounds (horizontal overflow fix)
-V11: Fixed apply_zoom — constrain painting size to inner canvas (no overflow in any orientation)
-V12: New approach for zoom+rect — detect frame, create white canvas with painting AR, add border+shadow
-V13: Test — only steps A+B+C (frame detection + white canvas), no painting/border/shadow
-V14: Fix detect_outer_frame — scan single pixel at center column/row instead of full row/col mean
-V15: Fix detect_outer_frame — use narrow center strip (5%) mean instead of single pixel, more robust
-V16: New detect_outer_frame — find largest bright canvas region, expand to cover black border
-V17: New approach — detect red dot (ImagePoint) in mockup, place white canvas using size_px + painting AR
-V18: שלב D — הלבשת תמונת המקור על המשטח הלבן
-V19: שלב E — מסגרת שחורה בעובי 2% מממוצע גובה+רוחב
-V20: שלב F — צללית רכה לימין-מטה (אור מלמעלה-שמאל)
-V21: פרמטרי מסגרת וצל מגיעים מהבקשה (frame_width, frame_color, shadow_*) — ערכי default אם חסרים
-V22: Fix — size_px מוגבל ל-80% מהממד הקטן של ה-mockup — מונע גלישה מחוץ לתמונה
-V23: Added /receipt endpoint — builds HTML receipt and sends via Gmail SMTP (fire and forget)
-V24: Fixed receipt HTML — fully inline styles, table-based layout, proper RTL for Gmail
-V25: Receipt — light header bg, receipt number centered+large, fixed totals/payment direction, translate "None"
-V26: Receipt email — attach PDF (weasyprint) + HTML in body
-V27: Replace weasyprint with xhtml2pdf — no system dependencies required
-V28: Replace xhtml2pdf with fpdf2 — pure Python, no system dependencies, Hebrew TTF font
-V29: Fix RTL — only reverse Hebrew text, English painting names and Artmidnet stay as-is
-V30: Redesign PDF — python-bidi for proper BiDi, beige header with logo, matches HTML email
-
-Endpoints:
-  GET  /health          — health check
-  POST /mockup          — generates room mockup image (stretch / adapt)
-  POST /noframe         — BuildMockupNoframe — painting centered on light background
-  POST /zoom            — BuildMockupZoom    — painting fills 80% of mockup
-  POST /rect            — BuildMockupRect    — adapts frame AR to painting
-  POST /layers-report   — generates Layers Schema DOCX, returns base64 JSON
-  POST /cms-report      — generates CMS Schema DOCX, returns base64 JSON
-  POST /receipt         — builds HTML receipt and sends email to customer
+V38: Receipt colors (strip1, strip2, header) read from payload data
+     instead of hardcoded constants — with fallback to original values.
+     Changes only in build_receipt_html and build_receipt_pdf.
 """
 
 from flask import Flask, request, jsonify
@@ -438,18 +401,33 @@ def apply_rect(painting_img: Image.Image, mockup_img: Image.Image, size_px: int 
     return apply_new_mockup(painting_img, mockup_img, size_px, **kwargs)
 
 
+# ─────────────────────────────────────────────
+# Helper: normalize hex color — ensure leading #
+# ─────────────────────────────────────────────
+def normalize_hex(hex_str: str, fallback: str) -> str:
+    """V38: ensure color has leading #. If empty/None — return fallback."""
+    if not hex_str:
+        return fallback
+    h = hex_str.strip()
+    if not h.startswith("#"):
+        h = "#" + h
+    return h if len(h) in (7, 4) else fallback
+
+
 # ═════════════════════════════════════════════
 # RECEIPT: HTML Builder
 # ═════════════════════════════════════════════
 
 def build_receipt_html(data: dict) -> str:
-    """V25: RTL receipt — light header, centered receipt number, fixed directions, translate None."""
+    """V38: Colors read from payload (colorStrip1/2, colorHeader) with fallbacks."""
 
-    # ── colors ──
-    C_DARK    = "#1a2e4a"
-    C_GOLD    = "#c9a84c"
+    # ── V38: colors from payload, fallback to original values ──
+    C_HEADER  = normalize_hex(data.get("colorStrip1", ""), "#f8f4ef")
+    C_GOLD    = normalize_hex(data.get("colorStrip2", ""), "#c9a84c")
+    C_DARK    = normalize_hex(data.get("colorHeader",  ""), "#1a2e4a")
+
+    # ── fixed colors (not configurable) ──
     C_WHITE   = "#ffffff"
-    C_HEADER  = "#f8f4ef"   # V25: בהיר מאוד לheader
     C_BG      = "#f5f5f5"
     C_BORDER  = "#e0e0e0"
     C_TEXT    = "#333333"
@@ -468,7 +446,7 @@ def build_receipt_html(data: dict) -> str:
     else:
         logo_html = f'<span style="font-size:18px;font-weight:bold;color:{C_DARK};">{data.get("businessName","")}</span>'
 
-    # ── items rows — V25: translate "None" → "ללא מסגרת" ──
+    # ── items rows ──
     def translate_details(details: str) -> str:
         return details.replace("None", "ללא מסגרת").replace("none", "ללא מסגרת")
 
@@ -514,7 +492,7 @@ def build_receipt_html(data: dict) -> str:
   <table width="100%" cellpadding="0" cellspacing="0" border="0"
     style="background:{C_WHITE};border:1px solid {C_BORDER};border-radius:4px;">
 
-    <!-- HEADER — V25: light bg -->
+    <!-- HEADER -->
     <tr>
       <td style="background:{C_HEADER};padding:20px 28px;border-radius:4px 4px 0 0;border-bottom:1px solid {C_BORDER};">
         <table width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -533,12 +511,11 @@ def build_receipt_html(data: dict) -> str:
       </td>
     </tr>
 
-    <!-- TITLE BAND — V25: receipt number centered + large -->
+    <!-- TITLE BAND -->
     <tr>
       <td style="background:{C_GOLD};padding:14px 28px;">
         <table width="100%" cellpadding="0" cellspacing="0" border="0">
           <tr>
-            <!-- שורה 1: מספר קבלה מרוכז -->
             <td colspan="2" style="text-align:center;padding-bottom:6px;">
               <span style="font-size:26px;font-weight:bold;color:{C_DARK};">
                 {data.get('documentType','קבלה')} מספר {data.get('receiptNumber','')}
@@ -546,7 +523,6 @@ def build_receipt_html(data: dict) -> str:
             </td>
           </tr>
           <tr>
-            <!-- שורה 2: מספר הזמנה קטן יותר -->
             <td colspan="2" style="text-align:center;">
               <span style="font-size:12px;color:{C_DARK};opacity:0.8;">
                 הזמנה מספר {data.get('orderNumber','')}
@@ -596,7 +572,7 @@ def build_receipt_html(data: dict) -> str:
           <tbody>{items_html}</tbody>
         </table>
 
-        <!-- TOTALS — V25: fixed direction, סכום מימין -->
+        <!-- TOTALS -->
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:20px;">
           <tr>
             <td width="50%"></td>
@@ -627,7 +603,7 @@ def build_receipt_html(data: dict) -> str:
         <!-- PAYMENT SECTION TITLE -->
         <div style="font-size:10px;font-weight:bold;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;text-align:right;">פרטי תשלום</div>
 
-        <!-- PAYMENT TABLE — V25: fixed direction -->
+        <!-- PAYMENT TABLE -->
         <table width="100%" cellpadding="0" cellspacing="0" border="0"
           style="background:{C_BG};border:1px solid {C_BORDER};border-radius:3px;margin-bottom:20px;">
           <tr>
@@ -673,30 +649,28 @@ def build_receipt_html(data: dict) -> str:
 
 
 # ═════════════════════════════════════════════
-# RECEIPT: PDF Builder (V30 — fpdf2 + python-bidi + new design)
+# RECEIPT: PDF Builder (V38 — colors from payload)
 # ═════════════════════════════════════════════
 
 def build_receipt_pdf(data: dict) -> bytes:
-    """V30: PDF receipt — manual RTL reversal, no python-bidi dependency."""
+    """V38: Colors read from payload (colorStrip1/2, colorHeader) with fallbacks."""
     import tempfile
 
     # ── font path ──
     font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
-    print(f"V37 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
+    print(f"V38 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
 
     # ── RTL helpers ──
     def has_hebrew(text: str) -> bool:
         return any('א' <= c <= 'ת' for c in str(text))
 
     def bidi(text: str) -> str:
-        """Pre-reverse Hebrew text so fpdf2 RTL font renders it correctly."""
         if not text:
             return ""
         t = str(text)
         return t[::-1] if has_hebrew(t) else t
 
     def smart_bidi(text: str) -> str:
-        """V35: Handle mixed Hebrew+Latin+numbers — reverse Hebrew words, keep rest, reverse word order."""
         if not text:
             return ""
         words = str(text).split(" ")
@@ -704,18 +678,29 @@ def build_receipt_pdf(data: dict) -> bytes:
         return " ".join(reversed(processed))
 
     def details_bidi(raw: str) -> str:
-        """V35: Split details by pipe, smart_bidi each part, reverse part order."""
         if not raw:
             return ""
         parts = [p.strip() for p in raw.split("|")]
         processed = [smart_bidi(p) for p in parts]
         return " | ".join(reversed(processed))
 
-    # ── colors ──
-    C_DARK  = (26, 46, 74)    # #1a2e4a
-    C_GOLD  = (201, 168, 76)  # #c9a84c
-    C_HEAD  = (248, 244, 239) # #f8f4ef beige header
-    C_BORD  = (224, 224, 224) # #e0e0e0
+    # ── V38: colors from payload with fallbacks ──
+    def hex_to_rgb_tuple(hex_str: str, fallback: tuple) -> tuple:
+        h = normalize_hex(hex_str, "")
+        if not h:
+            return fallback
+        try:
+            h = h.lstrip("#")
+            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+        except Exception:
+            return fallback
+
+    C_HEAD  = hex_to_rgb_tuple(data.get("colorStrip1", ""), (248, 244, 239))  # #f8f4ef
+    C_GOLD  = hex_to_rgb_tuple(data.get("colorStrip2", ""), (201, 168, 76))   # #c9a84c
+    C_DARK  = hex_to_rgb_tuple(data.get("colorHeader",  ""), (26, 46, 74))    # #1a2e4a
+
+    # ── fixed colors ──
+    C_BORD  = (224, 224, 224)
     C_MUTED = (136, 136, 136)
     C_TEXT  = (50, 50, 50)
     C_LIGHT = (250, 250, 250)
@@ -731,12 +716,12 @@ def build_receipt_pdf(data: dict) -> bytes:
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(r.content)
                 logo_path = tmp.name
-            print(f"V30 logo downloaded: {logo_path}")
+            print(f"V38 logo downloaded: {logo_path}")
         except Exception as e:
-            print(f"V30 logo download failed: {e}")
+            print(f"V38 logo download failed: {e}")
 
     # ── data fields ──
-    business_name  = data.get("businessName", "Artmidnet")
+    business_name  = data.get("businessName", "")
     tax_id         = data.get("businessTaxId", "")
     biz_addr       = data.get("bizAddress", "")
     biz_email      = data.get("businessEmail", "")
@@ -763,29 +748,26 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf = FPDF()
     pdf.add_page()
     pdf.add_font("Hebrew", fname=font_path)
-    page_w = pdf.w  # 210mm A4
+    page_w = pdf.w
 
     # ════════════════════════════════
-    # HEADER — beige bg, logo right, biz info left
+    # HEADER
     # ════════════════════════════════
     header_h = 28
     pdf.set_fill_color(*C_HEAD)
     pdf.rect(0, 0, page_w, header_h, style="F")
 
-    # logo (right side)
     if logo_path:
         try:
-            pdf.image(logo_path, x=page_w/2 - 20, y=5, h=22)  # V34: centered, smaller
+            pdf.image(logo_path, x=page_w/2 - 20, y=5, h=22)
         except Exception as e:
-            print(f"V30 logo embed failed: {e}")
+            print(f"V38 logo embed failed: {e}")
 
-    # business name (left side)
     pdf.set_text_color(*C_DARK)
     pdf.set_font("Hebrew", size=13)
     pdf.set_xy(10, 5)
     pdf.cell(140, 8, business_name)
 
-    # business details (left side)
     pdf.set_font("Hebrew", size=8)
     pdf.set_text_color(85, 85, 85)
     pdf.set_xy(10, 14)
@@ -795,13 +777,12 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.set_xy(10, 24)
     pdf.cell(140, 5, f"{biz_email} | {biz_phone}")
 
-    # bottom border of header
     pdf.set_draw_color(*C_BORD)
     pdf.set_line_width(0.3)
     pdf.line(0, header_h, page_w, header_h)
 
     # ════════════════════════════════
-    # GOLD BAND — receipt number centered
+    # GOLD BAND
     # ════════════════════════════════
     gold_y = header_h
     gold_h = 24
@@ -823,7 +804,6 @@ def build_receipt_pdf(data: dict) -> bytes:
     body_y = gold_y + gold_h + 2
     pdf.set_y(body_y)
 
-    # ── customer + date ──
     pdf.set_font("Hebrew", size=8)
     pdf.set_text_color(*C_MUTED)
     pdf.set_xy(10, body_y)
@@ -842,21 +822,18 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.cell(95, 5, customer_email, align="L")
     pdf.cell(95, 5, customer_phone, align="R", new_x="LMARGIN", new_y="NEXT")
 
-    # ── separator ──
     sep_y = pdf.get_y() + 1
     pdf.set_draw_color(*C_BORD)
     pdf.set_line_width(0.3)
     pdf.line(10, sep_y, page_w - 10, sep_y)
     pdf.set_y(sep_y + 1)
 
-    # ── section label ──
     pdf.set_font("Hebrew", size=8)
     pdf.set_text_color(*C_MUTED)
     pdf.set_x(10)
     pdf.cell(page_w - 20, 5, bidi('פירוט הרכישה'), align="R", new_x="LMARGIN", new_y="NEXT")
 
-    # ── items table header — V32: reversed column order for RTL layout ──
-    # visual RTL order (left→right on page): סה"כ | מחיר | כמות | פירוט | מק"ט
+    # ── items table header ──
     col_w   = [30, 30, 20, 95, 15]
     headers = ['סה"כ', "מחיר", "כמות", "פירוט", 'מק"ט']
     pdf.set_fill_color(*C_DARK)
@@ -880,18 +857,14 @@ def build_receipt_pdf(data: dict) -> bytes:
         item_price = str(item.get("price", ""))
         item_total = str(item.get("total", ""))
         details    = item.get("details", "").replace("None", "ללא מסגרת").replace("none", "ללא מסגרת")
-
-        # V35: details_bidi handles word-level RTL and part order
         details_rtl = details_bidi(details)
 
-        # V32: reversed column order matches header (סה"כ left, מק"ט right)
-        pdf.cell(col_w[0], 6, item_total,   border=0,   align="C",  fill=even)
-        pdf.cell(col_w[1], 6, item_price,   border=0,   align="C",  fill=even)
-        pdf.cell(col_w[2], 6, "1",           border=0,   align="C",  fill=even)
-        pdf.cell(col_w[3], 6, item_name,    border=0,   align="R",  fill=even)
-        pdf.cell(col_w[4], 6, item_index,   border=0,   align="C",  fill=even)
+        pdf.cell(col_w[0], 6, item_total,  border=0, align="C", fill=even)
+        pdf.cell(col_w[1], 6, item_price,  border=0, align="C", fill=even)
+        pdf.cell(col_w[2], 6, "1",          border=0, align="C", fill=even)
+        pdf.cell(col_w[3], 6, item_name,   border=0, align="R", fill=even)
+        pdf.cell(col_w[4], 6, item_index,  border=0, align="C", fill=even)
         pdf.ln()
-        # second line — Hebrew details right-aligned in the wide פירוט column
         if details_rtl:
             pdf.set_font("Hebrew", size=9)
             pdf.set_text_color(*C_DARK)
@@ -915,7 +888,6 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.set_text_color(*C_TEXT)
 
     def totals_row(label, value, font_size=11, fill=False, bg=None, fg=None):
-        # V34: totals only in right half of page (matches HTML email layout)
         half = page_w / 2
         if bg:
             pdf.set_fill_color(*bg)
@@ -923,11 +895,8 @@ def build_receipt_pdf(data: dict) -> bytes:
             pdf.set_text_color(*fg)
         pdf.set_font("Hebrew", size=font_size)
         pdf.set_x(10)
-        # left spacer (fills left half)
         pdf.cell(half - 10, 7, "", fill=False)
-        # value (left side of right half)
         pdf.cell((half - 10) / 2, 7, str(value), align="L", fill=fill)
-        # label (right side of right half)
         pdf.cell((half - 10) / 2, 7, bidi(label), align="R", fill=fill, new_x="LMARGIN", new_y="NEXT")
 
     totals_row("סכום ביניים", subtotal)
@@ -947,7 +916,6 @@ def build_receipt_pdf(data: dict) -> bytes:
         pdf.set_text_color(*C_TEXT)
         pdf.set_font("Hebrew", size=10)
         pdf.set_x(10)
-        # value: use bidi only if Hebrew, otherwise show as-is (e.g. PayPal, credit card)
         val_str = str(value)
         pdf.cell(95, 7, bidi(val_str) if has_hebrew(val_str) else val_str, align="L")
         pdf.cell(95, 7, bidi(label), align="R", new_x="LMARGIN", new_y="NEXT")
@@ -958,7 +926,7 @@ def build_receipt_pdf(data: dict) -> bytes:
     payment_row("תאריך חיוב", order_date)
     payment_row("סכום", total)
 
-    # ── footer — V37: inline, no set_y(-18) which caused page 2 ──
+    # ── footer ──
     pdf.ln(3)
     pdf.set_draw_color(*C_DARK)
     pdf.set_line_width(0.5)
@@ -969,14 +937,13 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.set_x(10)
     pdf.cell(page_w - 20, 5, smart_bidi(footer_text), align="R")
 
-    # ── cleanup logo temp file ──
     if logo_path and os.path.exists(logo_path):
         try:
             os.unlink(logo_path)
         except Exception:
             pass
 
-    print(f"V37 build_receipt_pdf: PDF built successfully")
+    print(f"V38 build_receipt_pdf: PDF built successfully")
     return pdf.output()
 
 
@@ -994,7 +961,6 @@ def send_receipt_email(to_email: str, subject: str, html_body: str, data: dict =
         return
 
     try:
-        # ── Generate PDF using fpdf2 ──
         pdf_bytes    = None
         receipt_num  = str(data.get("receiptNumber", "")) if data else ""
         pdf_filename = f"receipt_{receipt_num}.pdf" if receipt_num else "receipt.pdf"
@@ -1006,22 +972,18 @@ def send_receipt_email(to_email: str, subject: str, html_body: str, data: dict =
         else:
             print("V28 send_receipt_email: no data provided — skipping PDF")
 
-        # ── Build email ──
         msg = MIMEMultipart("mixed")
         msg["Subject"] = subject
         msg["From"]    = gmail_user
         msg["To"]      = to_email
 
-        # HTML body
         msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-        # PDF attachment (if generated successfully)
         if pdf_bytes:
             pdf_part = MIMEApplication(pdf_bytes, _subtype="pdf")
             pdf_part.add_header("Content-Disposition", "attachment", filename=pdf_filename)
             msg.attach(pdf_part)
 
-        # ── Send ──
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(gmail_user, gmail_pass)
             server.sendmail(gmail_user, to_email, msg.as_string())
@@ -1082,7 +1044,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V37"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V38"})
 
 
 @app.route("/mockup", methods=["POST"])
@@ -1197,7 +1159,6 @@ def rect():
 
 # ═════════════════════════════════════════════
 # ENDPOINT: RECEIPT
-# V23: Fire and forget — returns immediately, sends email in background
 # ═════════════════════════════════════════════
 
 @app.route("/receipt", methods=["POST"])
@@ -1205,22 +1166,18 @@ def receipt():
     try:
         data = request.get_json(force=True)
 
-        # ── validate required fields ──
         required = ["customerEmail", "customerName", "orderNumber", "receiptNumber", "items", "total"]
         for field in required:
             if not data.get(field):
                 return jsonify({"error": f"Missing required field: {field}"}), 400
 
-        # ── build HTML ──
         html_body = build_receipt_html(data)
 
-        # ── subject line ──
         doc_type      = data.get("documentType", "קבלה")
         receipt_num   = data.get("receiptNumber", "")
-        business_name = data.get("businessName", "Artmidnet")
+        business_name = data.get("businessName", "")
         subject = f"{doc_type} מספר {receipt_num} מאת {business_name}"
 
-        # ── fire and forget — send in background ──
         to_email = data.get("customerEmail")
         thread = threading.Thread(
             target=send_receipt_email,
@@ -1229,7 +1186,7 @@ def receipt():
         )
         thread.start()
 
-        print(f"V28 /receipt: queued email to {to_email} | receipt={receipt_num} order={data.get('orderNumber')}")
+        print(f"V38 /receipt: queued email to {to_email} | receipt={receipt_num} order={data.get('orderNumber')}")
 
         return jsonify({
             "status": "ok",

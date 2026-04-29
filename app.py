@@ -1,6 +1,6 @@
 """
 Artmidnet Mockup Server — app.py V58
-------------------------------------
+------------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
 V3:  Added /layers-report endpoint — generates DOCX, returns file directly

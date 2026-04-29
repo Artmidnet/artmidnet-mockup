@@ -984,7 +984,7 @@ def send_receipt_email(to_email: str, subject: str, html_body: str, data: dict =
             pdf_part.add_header("Content-Disposition", "attachment", filename=pdf_filename)
             msg.attach(pdf_part)
 
-with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
             server.starttls()
             server.login(gmail_user, gmail_pass)
             server.sendmail(gmail_user, to_email, msg.as_string())

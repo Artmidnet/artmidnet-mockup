@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V37
+Artmidnet Mockup Server — app.py V58
 ------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
@@ -682,7 +682,7 @@ def build_receipt_pdf(data: dict) -> bytes:
 
     # ── font path ──
     font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
-    print(f"V37 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
+    print(f"V58 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
 
     # ── RTL helpers ──
     def has_hebrew(text: str) -> bool:
@@ -976,7 +976,7 @@ def build_receipt_pdf(data: dict) -> bytes:
         except Exception:
             pass
 
-    print(f"V37 build_receipt_pdf: PDF built successfully")
+    print(f"V58 build_receipt_pdf: PDF built successfully")
     return pdf.output()
 
 
@@ -1021,15 +1021,28 @@ def send_receipt_email(to_email: str, subject: str, html_body: str, data: dict =
             pdf_part.add_header("Content-Disposition", "attachment", filename=pdf_filename)
             msg.attach(pdf_part)
 
-        # ── Send ──
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(gmail_user, gmail_pass)
-            server.sendmail(gmail_user, to_email, msg.as_string())
+        # ── Send — V58: retry up to 3 times if network not ready ──
+        import time
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
+                    server.login(gmail_user, gmail_pass)
+                    server.sendmail(gmail_user, to_email, msg.as_string())
+                print(f"V58 send_receipt_email: sent to {to_email} | attempt={attempt} | PDF={pdf_filename}")
+                last_error = None
+                break
+            except Exception as e:
+                last_error = e
+                print(f"V58 send_receipt_email: attempt {attempt} FAILED — {str(e)}")
+                if attempt < 3:
+                    time.sleep(5)
 
-        print(f"V28 send_receipt_email: sent to {to_email} with PDF {pdf_filename}")
+        if last_error:
+            print(f"V58 send_receipt_email: all attempts FAILED — {str(last_error)}")
 
     except Exception as e:
-        print(f"V28 send_receipt_email: FAILED — {str(e)}")
+        print(f"V58 send_receipt_email: FAILED — {str(e)}")
 
 
 # ═════════════════════════════════════════════
@@ -1082,7 +1095,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V37"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V58"})
 
 
 @app.route("/mockup", methods=["POST"])

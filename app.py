@@ -1,10 +1,10 @@
 """
-Artmidnet Mockup Server — app.py V41
+Artmidnet Mockup Server — app.py V42
 ------------------------------------
 V38: Receipt colors (strip1, strip2, header) read from payload data
      instead of hardcoded constants — with fallback to original values.
      Changes only in build_receipt_html and build_receipt_pdf.
-V41: send_receipt_email — replaced smtplib (SMTP port 465) with
+V42: send_receipt_email — replaced smtplib (SMTP port 465) with
      SendGrid HTTP API (port 443) to work on Render free tier.
 """
 
@@ -910,16 +910,16 @@ def build_receipt_pdf(data: dict) -> bytes:
 
 
 # ─────────────────────────────────────────────
-# RECEIPT: SendGrid Sender (V41 — replaces smtplib)
+# RECEIPT: SendGrid Sender (V42 — replaces smtplib)
 # ─────────────────────────────────────────────
 
 def send_receipt_email(to_email: str, subject: str, html_body: str, data: dict = None):
-    """V41: Send receipt email via SendGrid HTTP API (port 443 — works on Render free)."""
+    """V42: Send receipt email via SendGrid HTTP API (port 443 — works on Render free)."""
     sendgrid_api_key = os.environ.get("SENDGRID_API_KEY", "")
-    gmail_user       = os.environ.get("GMAIL_USER", "artmidnet@gmail.com")
+    gmail_user       = os.environ.get("GMAIL_USER", "israel.pinchas@gmail.com")
 
     if not sendgrid_api_key:
-        print("V41 send_receipt_email: ERROR — SENDGRID_API_KEY not set")
+        print("V42 send_receipt_email: ERROR — SENDGRID_API_KEY not set")
         return
 
     try:
@@ -928,9 +928,9 @@ def send_receipt_email(to_email: str, subject: str, html_body: str, data: dict =
         pdf_filename = f"receipt_{receipt_num}.pdf" if receipt_num else "receipt.pdf"
 
         if data:
-            print("V41 send_receipt_email: generating PDF...")
+            print("V42 send_receipt_email: generating PDF...")
             pdf_bytes = build_receipt_pdf(data)
-            print(f"V41 send_receipt_email: PDF generated — {len(pdf_bytes)} bytes")
+            print(f"V42 send_receipt_email: PDF generated — {len(pdf_bytes)} bytes")
 
         # ── Build SendGrid payload ──
         payload = {
@@ -959,12 +959,12 @@ def send_receipt_email(to_email: str, subject: str, html_body: str, data: dict =
         )
 
         if response.status_code in (200, 202):
-            print(f"V41 send_receipt_email: sent to {to_email} | status={response.status_code}")
+            print(f"V42 send_receipt_email: sent to {to_email} | status={response.status_code}")
         else:
-            print(f"V41 send_receipt_email: FAILED | status={response.status_code} | {response.text}")
+            print(f"V42 send_receipt_email: FAILED | status={response.status_code} | {response.text}")
 
     except Exception as e:
-        print(f"V41 send_receipt_email: EXCEPTION — {str(e)}")
+        print(f"V42 send_receipt_email: EXCEPTION — {str(e)}")
 
 
 # ═════════════════════════════════════════════
@@ -1017,7 +1017,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V41"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V42"})
 
 
 @app.route("/mockup", methods=["POST"])
@@ -1152,9 +1152,9 @@ def receipt():
         subject = f"{doc_type} מספר {receipt_num} מאת {business_name}"
 
         to_email = data.get("customerEmail")
-        print(f"V41 /receipt: sending email to {to_email} | receipt={receipt_num} order={data.get('orderNumber')}")
+        print(f"V42 /receipt: sending email to {to_email} | receipt={receipt_num} order={data.get('orderNumber')}")
 
-        # V41: synchronous — send before returning response
+        # V42: synchronous — send before returning response
         send_receipt_email(to_email, subject, html_body, data)
 
         return jsonify({

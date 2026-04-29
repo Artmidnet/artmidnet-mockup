@@ -1,5 +1,5 @@
 """
-Artmidnet Mockup Server — app.py V38
+Artmidnet Mockup Server — app.py V39
 ------------------------------------
 V38: Receipt colors (strip1, strip2, header) read from payload data
      instead of hardcoded constants — with fallback to original values.
@@ -984,7 +984,8 @@ def send_receipt_email(to_email: str, subject: str, html_body: str, data: dict =
             pdf_part.add_header("Content-Disposition", "attachment", filename=pdf_filename)
             msg.attach(pdf_part)
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
             server.login(gmail_user, gmail_pass)
             server.sendmail(gmail_user, to_email, msg.as_string())
 

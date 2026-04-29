@@ -1,7 +1,7 @@
 """
-Artmidnet Mockup Server — app.py V59
+Artmidnet Mockup Server — app.py V60
 ------------------------------------
-V59: /receipt — email only, no PDF. daemon=False + join(timeout=55).
+V60: /receipt — email only, no PDF, no thread. Direct call to send_receipt_email.
      All other endpoints unchanged from V37.
 """
 
@@ -15,7 +15,6 @@ import base64
 import datetime
 import os
 import smtplib
-import threading
 import sys
 import types
 from email.mime.multipart import MIMEMultipart
@@ -39,7 +38,7 @@ from docx.oxml import OxmlElement
 app = Flask(__name__)
 CORS(app)
 
-print("app.py V59 loaded", flush=True)
+print("app.py V60 loaded", flush=True)
 
 # ─────────────────────────────────────────────
 # Helper: download image from URL → PIL Image
@@ -404,8 +403,8 @@ def apply_rect(painting_img: Image.Image, mockup_img: Image.Image, size_px: int 
 # ═════════════════════════════════════════════
 
 def send_receipt_email(to_email: str, subject: str, order_number: str):
-    """V59: Send a plain test email via Gmail SMTP. No PDF, no HTML template."""
-    print(f"V59 send_receipt_email: START — to={to_email}", flush=True)
+    """V60: Send a plain email via Gmail SMTP. No PDF, no thread."""
+    print(f"V60 send_receipt_email: START — to={to_email}", flush=True)
 
     gmail_user = os.environ.get("GMAIL_USER", "")
     gmail_pass = os.environ.get("GMAIL_APP_PASS", "")
@@ -436,7 +435,7 @@ def send_receipt_email(to_email: str, subject: str, order_number: str):
         print(f"V59 send_receipt_email: SUCCESS — sent to {to_email}", flush=True)
 
     except Exception as e:
-        print(f"V59 send_receipt_email: FAILED — {str(e)}", flush=True)
+        print(f"V60 send_receipt_email: FAILED — {str(e)}", flush=True)
 
 
 # ═════════════════════════════════════════════
@@ -489,7 +488,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V59"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V60"})
 
 
 @app.route("/mockup", methods=["POST"])
@@ -624,21 +623,12 @@ def receipt():
         doc_type      = data.get("documentType", "קבלה")
         subject       = f"{doc_type} מספר {receipt_num} מאת {business_name}"
 
-        print(f"V59 /receipt: starting thread for {to_email} | receipt={receipt_num} order={order_number}", flush=True)
+        print(f"V60 /receipt: calling send_receipt_email directly | to={to_email} receipt={receipt_num} order={order_number}", flush=True)
 
-        # V59: daemon=False — thread will not be killed when request ends
-        thread = threading.Thread(
-            target=send_receipt_email,
-            args=(to_email, subject, order_number),
-            daemon=False
-        )
-        thread.start()
-        thread.join(timeout=55)  # wait up to 55 seconds for email to send
+        # V60: direct call — no thread, no timeout issues
+        send_receipt_email(to_email, subject, order_number)
 
-        if thread.is_alive():
-            print(f"V59 /receipt: WARNING — thread still alive after 55s timeout", flush=True)
-        else:
-            print(f"V59 /receipt: thread completed normally", flush=True)
+        print(f"V60 /receipt: send_receipt_email returned", flush=True)
 
         return jsonify({
             "status": "ok",

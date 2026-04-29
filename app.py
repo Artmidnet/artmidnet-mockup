@@ -1,9 +1,11 @@
 """
-Artmidnet Mockup Server — app.py V38
+Artmidnet Mockup Server — app.py V40
 ------------------------------------
 V38: Receipt colors (strip1, strip2, header) read from payload data
      instead of hardcoded constants — with fallback to original values.
      Changes only in build_receipt_html and build_receipt_pdf.
+V40: send_receipt_email — replaced smtplib (SMTP port 465) with
+     SendGrid HTTP API (port 443) to work on Render free tier.
 """
 
 from flask import Flask, request, jsonify
@@ -15,7 +17,6 @@ import io
 import base64
 import datetime
 import os
-import smtplib
 import threading
 import sys
 import types
@@ -421,12 +422,10 @@ def normalize_hex(hex_str: str, fallback: str) -> str:
 def build_receipt_html(data: dict) -> str:
     """V38: Colors read from payload (colorStrip1/2, colorHeader) with fallbacks."""
 
-    # ── V38: colors from payload, fallback to original values ──
     C_HEADER  = normalize_hex(data.get("colorStrip1", ""), "#f8f4ef")
     C_GOLD    = normalize_hex(data.get("colorStrip2", ""), "#c9a84c")
     C_DARK    = normalize_hex(data.get("colorHeader",  ""), "#1a2e4a")
 
-    # ── fixed colors (not configurable) ──
     C_WHITE   = "#ffffff"
     C_BG      = "#f5f5f5"
     C_BORDER  = "#e0e0e0"
@@ -434,19 +433,16 @@ def build_receipt_html(data: dict) -> str:
     C_MUTED   = "#888888"
     C_LIGHT   = "#fafafa"
 
-    # ── VAT ──
     vat_rate  = data.get("vatRate", 0)
     vat_label = f"מע\"מ {int(vat_rate * 100)}%" if (vat_rate and vat_rate > 0) else "מע\"מ (פטור)"
     vat_value = data.get("vatAmount", "₪0.00") if (vat_rate and vat_rate > 0) else "פטור"
 
-    # ── logo ──
     logo_url = data.get("logoUrl", "")
     if logo_url:
         logo_html = f'<img src="{logo_url}" alt="לוגו" width="130" style="display:block;max-height:60px;width:auto;">'
     else:
         logo_html = f'<span style="font-size:18px;font-weight:bold;color:{C_DARK};">{data.get("businessName","")}</span>'
 
-    # ── items rows ──
     def translate_details(details: str) -> str:
         return details.replace("None", "ללא מסגרת").replace("none", "ללא מסגרת")
 
@@ -466,7 +462,6 @@ def build_receipt_html(data: dict) -> str:
           <td style="padding:10px 8px;border-bottom:1px solid {C_BORDER};text-align:right;font-size:12px;font-weight:bold;color:{C_DARK};background:{row_bg};">{item.get('total','')}</td>
         </tr>"""
 
-    # ── payment detail row ──
     payment_details     = data.get("paymentDetails", "")
     payment_detail_row  = ""
     if payment_details:
@@ -488,11 +483,9 @@ def build_receipt_html(data: dict) -> str:
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:680px;margin:0 auto;">
 <tr><td>
 
-  <!-- DOCUMENT WRAPPER -->
   <table width="100%" cellpadding="0" cellspacing="0" border="0"
     style="background:{C_WHITE};border:1px solid {C_BORDER};border-radius:4px;">
 
-    <!-- HEADER -->
     <tr>
       <td style="background:{C_HEADER};padding:20px 28px;border-radius:4px 4px 0 0;border-bottom:1px solid {C_BORDER};">
         <table width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -511,7 +504,6 @@ def build_receipt_html(data: dict) -> str:
       </td>
     </tr>
 
-    <!-- TITLE BAND -->
     <tr>
       <td style="background:{C_GOLD};padding:14px 28px;">
         <table width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -533,11 +525,9 @@ def build_receipt_html(data: dict) -> str:
       </td>
     </tr>
 
-    <!-- BODY -->
     <tr>
       <td style="padding:24px 28px;background:{C_WHITE};">
 
-        <!-- RECIPIENT + DATE -->
         <table width="100%" cellpadding="0" cellspacing="0" border="0"
           style="margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid {C_BORDER};">
           <tr>
@@ -554,10 +544,8 @@ def build_receipt_html(data: dict) -> str:
           </tr>
         </table>
 
-        <!-- ITEMS SECTION TITLE -->
         <div style="font-size:10px;font-weight:bold;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;text-align:right;">פירוט הרכישה</div>
 
-        <!-- ITEMS TABLE -->
         <table width="100%" cellpadding="0" cellspacing="0" border="0"
           style="border-collapse:collapse;margin-bottom:20px;font-size:12px;">
           <thead>
@@ -572,7 +560,6 @@ def build_receipt_html(data: dict) -> str:
           <tbody>{items_html}</tbody>
         </table>
 
-        <!-- TOTALS -->
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:20px;">
           <tr>
             <td width="50%"></td>
@@ -600,10 +587,8 @@ def build_receipt_html(data: dict) -> str:
           </tr>
         </table>
 
-        <!-- PAYMENT SECTION TITLE -->
         <div style="font-size:10px;font-weight:bold;color:{C_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;text-align:right;">פרטי תשלום</div>
 
-        <!-- PAYMENT TABLE -->
         <table width="100%" cellpadding="0" cellspacing="0" border="0"
           style="background:{C_BG};border:1px solid {C_BORDER};border-radius:3px;margin-bottom:20px;">
           <tr>
@@ -624,7 +609,6 @@ def build_receipt_html(data: dict) -> str:
       </td>
     </tr>
 
-    <!-- FOOTER -->
     <tr>
       <td style="background:{C_BG};border-top:2px solid {C_DARK};padding:10px 28px;border-radius:0 0 4px 4px;">
         <table width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -637,7 +621,6 @@ def build_receipt_html(data: dict) -> str:
     </tr>
 
   </table>
-  <!-- END DOCUMENT WRAPPER -->
 
 </td></tr>
 </table>
@@ -656,11 +639,9 @@ def build_receipt_pdf(data: dict) -> bytes:
     """V38: Colors read from payload (colorStrip1/2, colorHeader) with fallbacks."""
     import tempfile
 
-    # ── font path ──
     font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
     print(f"V38 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
 
-    # ── RTL helpers ──
     def has_hebrew(text: str) -> bool:
         return any('א' <= c <= 'ת' for c in str(text))
 
@@ -684,7 +665,6 @@ def build_receipt_pdf(data: dict) -> bytes:
         processed = [smart_bidi(p) for p in parts]
         return " | ".join(reversed(processed))
 
-    # ── V38: colors from payload with fallbacks ──
     def hex_to_rgb_tuple(hex_str: str, fallback: tuple) -> tuple:
         h = normalize_hex(hex_str, "")
         if not h:
@@ -695,17 +675,15 @@ def build_receipt_pdf(data: dict) -> bytes:
         except Exception:
             return fallback
 
-    C_HEAD  = hex_to_rgb_tuple(data.get("colorStrip1", ""), (248, 244, 239))  # #f8f4ef
-    C_GOLD  = hex_to_rgb_tuple(data.get("colorStrip2", ""), (201, 168, 76))   # #c9a84c
-    C_DARK  = hex_to_rgb_tuple(data.get("colorHeader",  ""), (26, 46, 74))    # #1a2e4a
+    C_HEAD  = hex_to_rgb_tuple(data.get("colorStrip1", ""), (248, 244, 239))
+    C_GOLD  = hex_to_rgb_tuple(data.get("colorStrip2", ""), (201, 168, 76))
+    C_DARK  = hex_to_rgb_tuple(data.get("colorHeader",  ""), (26, 46, 74))
 
-    # ── fixed colors ──
     C_BORD  = (224, 224, 224)
     C_MUTED = (136, 136, 136)
     C_TEXT  = (50, 50, 50)
     C_LIGHT = (250, 250, 250)
 
-    # ── download logo ──
     logo_path = None
     logo_url  = data.get("logoUrl", "")
     if logo_url:
@@ -720,7 +698,6 @@ def build_receipt_pdf(data: dict) -> bytes:
         except Exception as e:
             print(f"V38 logo download failed: {e}")
 
-    # ── data fields ──
     business_name  = data.get("businessName", "")
     tax_id         = data.get("businessTaxId", "")
     biz_addr       = data.get("bizAddress", "")
@@ -744,15 +721,11 @@ def build_receipt_pdf(data: dict) -> bytes:
     footer_text    = data.get("footerText", "")
     items          = data.get("items", [])
 
-    # ── init PDF ──
     pdf = FPDF()
     pdf.add_page()
     pdf.add_font("Hebrew", fname=font_path)
     page_w = pdf.w
 
-    # ════════════════════════════════
-    # HEADER
-    # ════════════════════════════════
     header_h = 28
     pdf.set_fill_color(*C_HEAD)
     pdf.rect(0, 0, page_w, header_h, style="F")
@@ -781,9 +754,6 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.set_line_width(0.3)
     pdf.line(0, header_h, page_w, header_h)
 
-    # ════════════════════════════════
-    # GOLD BAND
-    # ════════════════════════════════
     gold_y = header_h
     gold_h = 24
     pdf.set_fill_color(*C_GOLD)
@@ -798,9 +768,6 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.set_xy(10, gold_y + 14)
     pdf.cell(page_w - 20, 8, bidi(f"הזמנה מספר {order_number}"), align="C")
 
-    # ════════════════════════════════
-    # BODY
-    # ════════════════════════════════
     body_y = gold_y + gold_h + 2
     pdf.set_y(body_y)
 
@@ -833,7 +800,6 @@ def build_receipt_pdf(data: dict) -> bytes:
     pdf.set_x(10)
     pdf.cell(page_w - 20, 5, bidi('פירוט הרכישה'), align="R", new_x="LMARGIN", new_y="NEXT")
 
-    # ── items table header ──
     col_w   = [30, 30, 20, 95, 15]
     headers = ['סה"כ', "מחיר", "כמות", "פירוט", 'מק"ט']
     pdf.set_fill_color(*C_DARK)
@@ -844,7 +810,6 @@ def build_receipt_pdf(data: dict) -> bytes:
         pdf.cell(w, 7, bidi(h), border=0, align="C", fill=True)
     pdf.ln()
 
-    # ── items rows ──
     for idx, item in enumerate(items):
         even = idx % 2 == 0
         pdf.set_fill_color(*C_LIGHT) if even else pdf.set_fill_color(255, 255, 255)
@@ -883,7 +848,6 @@ def build_receipt_pdf(data: dict) -> bytes:
                 pdf.cell(w, 1, "", border="B", fill=even)
             pdf.ln()
 
-    # ── totals ──
     pdf.ln(1)
     pdf.set_text_color(*C_TEXT)
 
@@ -905,7 +869,6 @@ def build_receipt_pdf(data: dict) -> bytes:
     totals_row(vat_label, bidi(vat_value), font_size=9)
     totals_row('סה"כ לתשלום', total, font_size=13, fill=True, bg=C_DARK, fg=C_GOLD)
 
-    # ── payment ──
     pdf.ln(1)
     pdf.set_text_color(*C_MUTED)
     pdf.set_font("Hebrew", size=8)
@@ -926,7 +889,6 @@ def build_receipt_pdf(data: dict) -> bytes:
     payment_row("תאריך חיוב", order_date)
     payment_row("סכום", total)
 
-    # ── footer ──
     pdf.ln(3)
     pdf.set_draw_color(*C_DARK)
     pdf.set_line_width(0.5)
@@ -948,16 +910,16 @@ def build_receipt_pdf(data: dict) -> bytes:
 
 
 # ─────────────────────────────────────────────
-# RECEIPT: Gmail Sender (runs in background thread)
+# RECEIPT: SendGrid Sender (V40 — replaces smtplib)
 # ─────────────────────────────────────────────
 
 def send_receipt_email(to_email: str, subject: str, html_body: str, data: dict = None):
-    """V28: Send HTML receipt email via Gmail SMTP with PDF attachment (fpdf2)."""
-    gmail_user = os.environ.get("GMAIL_USER", "")
-    gmail_pass = os.environ.get("GMAIL_APP_PASS", "")
+    """V40: Send receipt email via SendGrid HTTP API (port 443 — works on Render free)."""
+    sendgrid_api_key = os.environ.get("SENDGRID_API_KEY", "")
+    gmail_user       = os.environ.get("GMAIL_USER", "artmidnet@gmail.com")
 
-    if not gmail_user or not gmail_pass:
-        print("V28 send_receipt_email: ERROR — GMAIL_USER or GMAIL_APP_PASS not set")
+    if not sendgrid_api_key:
+        print("V40 send_receipt_email: ERROR — SENDGRID_API_KEY not set")
         return
 
     try:
@@ -966,32 +928,43 @@ def send_receipt_email(to_email: str, subject: str, html_body: str, data: dict =
         pdf_filename = f"receipt_{receipt_num}.pdf" if receipt_num else "receipt.pdf"
 
         if data:
-            print("V28 send_receipt_email: generating PDF with fpdf2...")
+            print("V40 send_receipt_email: generating PDF...")
             pdf_bytes = build_receipt_pdf(data)
-            print(f"V28 send_receipt_email: PDF generated — {len(pdf_bytes)} bytes")
-        else:
-            print("V28 send_receipt_email: no data provided — skipping PDF")
+            print(f"V40 send_receipt_email: PDF generated — {len(pdf_bytes)} bytes")
 
-        msg = MIMEMultipart("mixed")
-        msg["Subject"] = subject
-        msg["From"]    = gmail_user
-        msg["To"]      = to_email
-
-        msg.attach(MIMEText(html_body, "html", "utf-8"))
+        # ── Build SendGrid payload ──
+        payload = {
+            "personalizations": [{"to": [{"email": to_email}]}],
+            "from": {"email": gmail_user},
+            "subject": subject,
+            "content": [{"type": "text/html", "value": html_body}]
+        }
 
         if pdf_bytes:
-            pdf_part = MIMEApplication(pdf_bytes, _subtype="pdf")
-            pdf_part.add_header("Content-Disposition", "attachment", filename=pdf_filename)
-            msg.attach(pdf_part)
+            payload["attachments"] = [{
+                "content":     base64.b64encode(pdf_bytes).decode("utf-8"),
+                "type":        "application/pdf",
+                "filename":    pdf_filename,
+                "disposition": "attachment"
+            }]
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(gmail_user, gmail_pass)
-            server.sendmail(gmail_user, to_email, msg.as_string())
+        response = requests.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers={
+                "Authorization": f"Bearer {sendgrid_api_key}",
+                "Content-Type":  "application/json"
+            },
+            json=payload,
+            timeout=30
+        )
 
-        print(f"V28 send_receipt_email: sent to {to_email} with PDF {pdf_filename}")
+        if response.status_code in (200, 202):
+            print(f"V40 send_receipt_email: sent to {to_email} | status={response.status_code}")
+        else:
+            print(f"V40 send_receipt_email: FAILED | status={response.status_code} | {response.text}")
 
     except Exception as e:
-        print(f"V28 send_receipt_email: FAILED — {str(e)}")
+        print(f"V40 send_receipt_email: EXCEPTION — {str(e)}")
 
 
 # ═════════════════════════════════════════════
@@ -1044,7 +1017,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V38"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V40"})
 
 
 @app.route("/mockup", methods=["POST"])
@@ -1186,7 +1159,7 @@ def receipt():
         )
         thread.start()
 
-        print(f"V38 /receipt: queued email to {to_email} | receipt={receipt_num} order={data.get('orderNumber')}")
+        print(f"V40 /receipt: queued email to {to_email} | receipt={receipt_num} order={data.get('orderNumber')}")
 
         return jsonify({
             "status": "ok",

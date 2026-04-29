@@ -1186,6 +1186,7 @@ def receipt():
             daemon=True
         )
         thread.start()
+        thread.join(timeout=30)
 
         print(f"V38 /receipt: queued email to {to_email} | receipt={receipt_num} order={data.get('orderNumber')}")
 

@@ -1,6 +1,6 @@
 """
-Artmidnet Mockup Server — app.py V58
-------------------------------------------
+Artmidnet Mockup Server — app.py V25
+------------------------------------
 V1:  Basic mockup generation (stretch + adapt modes)
 V2:  CORS support, health check endpoint
 V3:  Added /layers-report endpoint — generates DOCX, returns file directly
@@ -26,11 +26,6 @@ V22: Fix — size_px מוגבל ל-80% מהממד הקטן של ה-mockup — מ
 V23: Added /receipt endpoint — builds HTML receipt and sends via Gmail SMTP (fire and forget)
 V24: Fixed receipt HTML — fully inline styles, table-based layout, proper RTL for Gmail
 V25: Receipt — light header bg, receipt number centered+large, fixed totals/payment direction, translate "None"
-V26: Receipt email — attach PDF (weasyprint) + HTML in body
-V27: Replace weasyprint with xhtml2pdf — no system dependencies required
-V28: Replace xhtml2pdf with fpdf2 — pure Python, no system dependencies, Hebrew TTF font
-V29: Fix RTL — only reverse Hebrew text, English painting names and Artmidnet stay as-is
-V30: Redesign PDF — python-bidi for proper BiDi, beige header with logo, matches HTML email
 
 Endpoints:
   GET  /health          — health check
@@ -54,20 +49,8 @@ import datetime
 import os
 import smtplib
 import threading
-import sys
-import types
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
-
-# V30: inject mock bidi module so fpdf2 never tries to import python-bidi
-_bidi_pkg  = types.ModuleType("bidi")
-_bidi_algo = types.ModuleType("bidi.algorithm")
-_bidi_algo.get_display = lambda text, **kwargs: text
-sys.modules.setdefault("bidi",           _bidi_pkg)
-sys.modules.setdefault("bidi.algorithm", _bidi_algo)
-
-from fpdf import FPDF
 
 from docx import Document as DocxDocument
 from docx.shared import Pt, RGBColor, Inches
@@ -604,20 +587,20 @@ def build_receipt_html(data: dict) -> str:
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
                 style="border:1px solid {C_BORDER};border-radius:3px;overflow:hidden;">
                 <tr>
-                  <td style="padding:8px 12px;text-align:right;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">סכום ביניים</td>
-                  <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('subtotal','')}</td>
+                  <td style="padding:8px 12px;text-align:right;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('subtotal','')}</td>
+                  <td style="padding:8px 12px;text-align:left;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">סכום ביניים</td>
                 </tr>
                 <tr>
-                  <td style="padding:8px 12px;text-align:right;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">משלוח</td>
-                  <td style="padding:8px 12px;text-align:left;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('shipping','₪0.00')}</td>
+                  <td style="padding:8px 12px;text-align:right;font-size:12px;font-weight:bold;color:{C_TEXT};border-bottom:1px solid {C_BORDER};">{data.get('shipping','₪0.00')}</td>
+                  <td style="padding:8px 12px;text-align:left;font-size:12px;color:#666;border-bottom:1px solid {C_BORDER};">משלוח</td>
                 </tr>
                 <tr>
-                  <td style="padding:8px 12px;text-align:right;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_label}</td>
-                  <td style="padding:8px 12px;text-align:left;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_value}</td>
+                  <td style="padding:8px 12px;text-align:right;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_value}</td>
+                  <td style="padding:8px 12px;text-align:left;font-size:11px;color:#aaa;border-bottom:1px solid {C_BORDER};">{vat_label}</td>
                 </tr>
                 <tr style="background:{C_DARK};">
-                  <td style="padding:10px 12px;text-align:right;font-size:13px;font-weight:bold;color:{C_WHITE};">סה"כ לתשלום</td>
-                  <td style="padding:10px 12px;text-align:left;font-size:15px;font-weight:bold;color:{C_GOLD};">{data.get('total','')}</td>
+                  <td style="padding:10px 12px;text-align:right;font-size:15px;font-weight:bold;color:{C_GOLD};">{data.get('total','')}</td>
+                  <td style="padding:10px 12px;text-align:left;font-size:13px;font-weight:bold;color:{C_WHITE};">סה"כ לתשלום</td>
                 </tr>
               </table>
             </td>
@@ -672,377 +655,34 @@ def build_receipt_html(data: dict) -> str:
     return html
 
 
-# ═════════════════════════════════════════════
-# RECEIPT: PDF Builder (V30 — fpdf2 + python-bidi + new design)
-# ═════════════════════════════════════════════
-
-def build_receipt_pdf(data: dict) -> bytes:
-    """V30: PDF receipt — manual RTL reversal, no python-bidi dependency."""
-    import tempfile
-
-    # ── font path ──
-    font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansHebrew-Regular.ttf")
-    print(f"V58 build_receipt_pdf: font={font_path} exists={os.path.exists(font_path)}")
-
-    # ── RTL helpers ──
-    def has_hebrew(text: str) -> bool:
-        return any('א' <= c <= 'ת' for c in str(text))
-
-    def bidi(text: str) -> str:
-        """Pre-reverse Hebrew text so fpdf2 RTL font renders it correctly."""
-        if not text:
-            return ""
-        t = str(text)
-        return t[::-1] if has_hebrew(t) else t
-
-    def smart_bidi(text: str) -> str:
-        """V35: Handle mixed Hebrew+Latin+numbers — reverse Hebrew words, keep rest, reverse word order."""
-        if not text:
-            return ""
-        words = str(text).split(" ")
-        processed = [w[::-1] if has_hebrew(w) else w for w in words]
-        return " ".join(reversed(processed))
-
-    def details_bidi(raw: str) -> str:
-        """V35: Split details by pipe, smart_bidi each part, reverse part order."""
-        if not raw:
-            return ""
-        parts = [p.strip() for p in raw.split("|")]
-        processed = [smart_bidi(p) for p in parts]
-        return " | ".join(reversed(processed))
-
-    # ── colors ──
-    C_DARK  = (26, 46, 74)    # #1a2e4a
-    C_GOLD  = (201, 168, 76)  # #c9a84c
-    C_HEAD  = (248, 244, 239) # #f8f4ef beige header
-    C_BORD  = (224, 224, 224) # #e0e0e0
-    C_MUTED = (136, 136, 136)
-    C_TEXT  = (50, 50, 50)
-    C_LIGHT = (250, 250, 250)
-
-    # ── download logo ──
-    logo_path = None
-    logo_url  = data.get("logoUrl", "")
-    if logo_url:
-        try:
-            r = requests.get(logo_url, timeout=10)
-            r.raise_for_status()
-            suffix = ".png" if "png" in logo_url.lower() else ".jpg"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(r.content)
-                logo_path = tmp.name
-            print(f"V30 logo downloaded: {logo_path}")
-        except Exception as e:
-            print(f"V30 logo download failed: {e}")
-
-    # ── data fields ──
-    business_name  = data.get("businessName", "Artmidnet")
-    tax_id         = data.get("businessTaxId", "")
-    biz_addr       = data.get("bizAddress", "")
-    biz_email      = data.get("businessEmail", "")
-    biz_phone      = data.get("bizPhone", "")
-    doc_type       = data.get("documentType", "קבלה")
-    receipt_num    = str(data.get("receiptNumber", ""))
-    order_number   = str(data.get("orderNumber", ""))
-    customer_name  = data.get("customerName", "")
-    customer_email = data.get("customerEmail", "")
-    customer_phone = data.get("customerPhone", "")
-    order_date     = data.get("orderDate", "")
-    subtotal       = str(data.get("subtotal", ""))
-    shipping       = str(data.get("shipping", "₪0.00"))
-    total          = str(data.get("total", ""))
-    vat_rate       = data.get("vatRate", 0)
-    vat_value      = str(data.get("vatAmount", "פטור")) if (vat_rate and vat_rate > 0) else "פטור"
-    vat_label      = f'מע"מ {int(vat_rate * 100)}%' if (vat_rate and vat_rate > 0) else 'מע"מ (פטור)'
-    payment_method  = str(data.get("paymentMethod", ""))
-    payment_details = str(data.get("paymentDetails", ""))
-    footer_text    = data.get("footerText", "")
-    items          = data.get("items", [])
-
-    # ── init PDF ──
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.add_font("Hebrew", fname=font_path)
-    page_w = pdf.w  # 210mm A4
-
-    # ════════════════════════════════
-    # HEADER — beige bg, logo right, biz info left
-    # ════════════════════════════════
-    header_h = 28
-    pdf.set_fill_color(*C_HEAD)
-    pdf.rect(0, 0, page_w, header_h, style="F")
-
-    # logo (right side)
-    if logo_path:
-        try:
-            pdf.image(logo_path, x=page_w/2 - 20, y=5, h=22)  # V34: centered, smaller
-        except Exception as e:
-            print(f"V30 logo embed failed: {e}")
-
-    # business name (left side)
-    pdf.set_text_color(*C_DARK)
-    pdf.set_font("Hebrew", size=13)
-    pdf.set_xy(10, 5)
-    pdf.cell(140, 8, business_name)
-
-    # business details (left side)
-    pdf.set_font("Hebrew", size=8)
-    pdf.set_text_color(85, 85, 85)
-    pdf.set_xy(10, 14)
-    pdf.cell(140, 5, f"ח.פ. {tax_id}")
-    pdf.set_xy(10, 19)
-    pdf.cell(140, 5, bidi(biz_addr))
-    pdf.set_xy(10, 24)
-    pdf.cell(140, 5, f"{biz_email} | {biz_phone}")
-
-    # bottom border of header
-    pdf.set_draw_color(*C_BORD)
-    pdf.set_line_width(0.3)
-    pdf.line(0, header_h, page_w, header_h)
-
-    # ════════════════════════════════
-    # GOLD BAND — receipt number centered
-    # ════════════════════════════════
-    gold_y = header_h
-    gold_h = 24
-    pdf.set_fill_color(*C_GOLD)
-    pdf.rect(0, gold_y, page_w, gold_h, style="F")
-
-    pdf.set_text_color(*C_DARK)
-    pdf.set_font("Hebrew", size=18)
-    pdf.set_xy(10, gold_y + 2)
-    pdf.cell(page_w - 20, 12, bidi(f"{doc_type} מספר {receipt_num}"), align="C")
-
-    pdf.set_font("Hebrew", size=9)
-    pdf.set_xy(10, gold_y + 14)
-    pdf.cell(page_w - 20, 8, bidi(f"הזמנה מספר {order_number}"), align="C")
-
-    # ════════════════════════════════
-    # BODY
-    # ════════════════════════════════
-    body_y = gold_y + gold_h + 2
-    pdf.set_y(body_y)
-
-    # ── customer + date ──
-    pdf.set_font("Hebrew", size=8)
-    pdf.set_text_color(*C_MUTED)
-    pdf.set_xy(10, body_y)
-    pdf.cell(95, 4, "תאריך", align="L")
-    pdf.cell(95, 4, bidi("לכבוד"), align="R", new_x="LMARGIN", new_y="NEXT")
-
-    pdf.set_font("Hebrew", size=11)
-    pdf.set_text_color(*C_DARK)
-    pdf.set_x(10)
-    pdf.cell(95, 5, order_date, align="L")
-    pdf.cell(95, 5, bidi(customer_name), align="R", new_x="LMARGIN", new_y="NEXT")
-
-    pdf.set_font("Hebrew", size=9)
-    pdf.set_text_color(100, 100, 100)
-    pdf.set_x(10)
-    pdf.cell(95, 5, customer_email, align="L")
-    pdf.cell(95, 5, customer_phone, align="R", new_x="LMARGIN", new_y="NEXT")
-
-    # ── separator ──
-    sep_y = pdf.get_y() + 1
-    pdf.set_draw_color(*C_BORD)
-    pdf.set_line_width(0.3)
-    pdf.line(10, sep_y, page_w - 10, sep_y)
-    pdf.set_y(sep_y + 1)
-
-    # ── section label ──
-    pdf.set_font("Hebrew", size=8)
-    pdf.set_text_color(*C_MUTED)
-    pdf.set_x(10)
-    pdf.cell(page_w - 20, 5, bidi('פירוט הרכישה'), align="R", new_x="LMARGIN", new_y="NEXT")
-
-    # ── items table header — V32: reversed column order for RTL layout ──
-    # visual RTL order (left→right on page): סה"כ | מחיר | כמות | פירוט | מק"ט
-    col_w   = [30, 30, 20, 95, 15]
-    headers = ['סה"כ', "מחיר", "כמות", "פירוט", 'מק"ט']
-    pdf.set_fill_color(*C_DARK)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font("Hebrew", size=9)
-    pdf.set_x(10)
-    for w, h in zip(col_w, headers):
-        pdf.cell(w, 7, bidi(h), border=0, align="C", fill=True)
-    pdf.ln()
-
-    # ── items rows ──
-    for idx, item in enumerate(items):
-        even = idx % 2 == 0
-        pdf.set_fill_color(*C_LIGHT) if even else pdf.set_fill_color(255, 255, 255)
-        pdf.set_text_color(*C_TEXT)
-        pdf.set_font("Hebrew", size=10)
-        pdf.set_x(10)
-
-        item_index = str(item.get("index", ""))
-        item_name  = item.get("name", "")
-        item_price = str(item.get("price", ""))
-        item_total = str(item.get("total", ""))
-        details    = item.get("details", "").replace("None", "ללא מסגרת").replace("none", "ללא מסגרת")
-
-        # V35: details_bidi handles word-level RTL and part order
-        details_rtl = details_bidi(details)
-
-        # V32: reversed column order matches header (סה"כ left, מק"ט right)
-        pdf.cell(col_w[0], 6, item_total,   border=0,   align="C",  fill=even)
-        pdf.cell(col_w[1], 6, item_price,   border=0,   align="C",  fill=even)
-        pdf.cell(col_w[2], 6, "1",           border=0,   align="C",  fill=even)
-        pdf.cell(col_w[3], 6, item_name,    border=0,   align="R",  fill=even)
-        pdf.cell(col_w[4], 6, item_index,   border=0,   align="C",  fill=even)
-        pdf.ln()
-        # second line — Hebrew details right-aligned in the wide פירוט column
-        if details_rtl:
-            pdf.set_font("Hebrew", size=9)
-            pdf.set_text_color(*C_DARK)
-            pdf.set_x(10)
-            pdf.cell(col_w[0], 6, "",           border="B", align="C", fill=even)
-            pdf.cell(col_w[1], 6, "",           border="B", align="C", fill=even)
-            pdf.cell(col_w[2], 6, "",           border="B", align="C", fill=even)
-            pdf.cell(col_w[3], 6, details_rtl,  border="B", align="R", fill=even)
-            pdf.cell(col_w[4], 6, "",           border="B", align="C", fill=even)
-            pdf.ln()
-            pdf.set_font("Hebrew", size=10)
-            pdf.set_text_color(*C_TEXT)
-        else:
-            pdf.set_x(10)
-            for w in col_w:
-                pdf.cell(w, 1, "", border="B", fill=even)
-            pdf.ln()
-
-    # ── totals ──
-    pdf.ln(1)
-    pdf.set_text_color(*C_TEXT)
-
-    def totals_row(label, value, font_size=11, fill=False, bg=None, fg=None):
-        # V34: totals only in right half of page (matches HTML email layout)
-        half = page_w / 2
-        if bg:
-            pdf.set_fill_color(*bg)
-        if fg:
-            pdf.set_text_color(*fg)
-        pdf.set_font("Hebrew", size=font_size)
-        pdf.set_x(10)
-        # left spacer (fills left half)
-        pdf.cell(half - 10, 7, "", fill=False)
-        # value (left side of right half)
-        pdf.cell((half - 10) / 2, 7, str(value), align="L", fill=fill)
-        # label (right side of right half)
-        pdf.cell((half - 10) / 2, 7, bidi(label), align="R", fill=fill, new_x="LMARGIN", new_y="NEXT")
-
-    totals_row("סכום ביניים", subtotal)
-    totals_row("משלוח", shipping)
-    pdf.set_text_color(170, 170, 170)
-    totals_row(vat_label, bidi(vat_value), font_size=9)
-    totals_row('סה"כ לתשלום', total, font_size=13, fill=True, bg=C_DARK, fg=C_GOLD)
-
-    # ── payment ──
-    pdf.ln(1)
-    pdf.set_text_color(*C_MUTED)
-    pdf.set_font("Hebrew", size=8)
-    pdf.set_x(10)
-    pdf.cell(page_w - 20, 5, bidi("פרטי תשלום"), align="R", new_x="LMARGIN", new_y="NEXT")
-
-    def payment_row(label, value):
-        pdf.set_text_color(*C_TEXT)
-        pdf.set_font("Hebrew", size=10)
-        pdf.set_x(10)
-        # value: use bidi only if Hebrew, otherwise show as-is (e.g. PayPal, credit card)
-        val_str = str(value)
-        pdf.cell(95, 7, bidi(val_str) if has_hebrew(val_str) else val_str, align="L")
-        pdf.cell(95, 7, bidi(label), align="R", new_x="LMARGIN", new_y="NEXT")
-
-    payment_row("אמצעי תשלום", payment_method)
-    if payment_details:
-        payment_row("פירוט", payment_details)
-    payment_row("תאריך חיוב", order_date)
-    payment_row("סכום", total)
-
-    # ── footer — V37: inline, no set_y(-18) which caused page 2 ──
-    pdf.ln(3)
-    pdf.set_draw_color(*C_DARK)
-    pdf.set_line_width(0.5)
-    pdf.line(10, pdf.get_y(), page_w - 10, pdf.get_y())
-    pdf.ln(2)
-    pdf.set_text_color(170, 170, 170)
-    pdf.set_font("Hebrew", size=8)
-    pdf.set_x(10)
-    pdf.cell(page_w - 20, 5, smart_bidi(footer_text), align="R")
-
-    # ── cleanup logo temp file ──
-    if logo_path and os.path.exists(logo_path):
-        try:
-            os.unlink(logo_path)
-        except Exception:
-            pass
-
-    print(f"V58 build_receipt_pdf: PDF built successfully")
-    return pdf.output()
-
-
 # ─────────────────────────────────────────────
 # RECEIPT: Gmail Sender (runs in background thread)
 # ─────────────────────────────────────────────
 
-def send_receipt_email(to_email: str, subject: str, html_body: str, data: dict = None):
-    """V28: Send HTML receipt email via Gmail SMTP with PDF attachment (fpdf2)."""
+def send_receipt_email(to_email: str, subject: str, html_body: str):
+    """V23: Send HTML receipt email via Gmail SMTP. Runs in background thread."""
     gmail_user = os.environ.get("GMAIL_USER", "")
     gmail_pass = os.environ.get("GMAIL_APP_PASS", "")
 
     if not gmail_user or not gmail_pass:
-        print("V28 send_receipt_email: ERROR — GMAIL_USER or GMAIL_APP_PASS not set")
+        print("V23 send_receipt_email: ERROR — GMAIL_USER or GMAIL_APP_PASS not set")
         return
 
     try:
-        # ── Generate PDF using fpdf2 ──
-        pdf_bytes    = None
-        receipt_num  = str(data.get("receiptNumber", "")) if data else ""
-        pdf_filename = f"receipt_{receipt_num}.pdf" if receipt_num else "receipt.pdf"
-
-        if data:
-            print("V28 send_receipt_email: generating PDF with fpdf2...")
-            pdf_bytes = build_receipt_pdf(data)
-            print(f"V28 send_receipt_email: PDF generated — {len(pdf_bytes)} bytes")
-        else:
-            print("V28 send_receipt_email: no data provided — skipping PDF")
-
-        # ── Build email ──
-        msg = MIMEMultipart("mixed")
+        msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"]    = gmail_user
         msg["To"]      = to_email
-
-        # HTML body
         msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-        # PDF attachment (if generated successfully)
-        if pdf_bytes:
-            pdf_part = MIMEApplication(pdf_bytes, _subtype="pdf")
-            pdf_part.add_header("Content-Disposition", "attachment", filename=pdf_filename)
-            msg.attach(pdf_part)
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(gmail_user, gmail_pass)
+            server.sendmail(gmail_user, to_email, msg.as_string())
 
-        # ── Send — V58: retry up to 3 times if network not ready ──
-        import time
-        last_error = None
-        for attempt in range(1, 4):
-            try:
-                with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
-                    server.login(gmail_user, gmail_pass)
-                    server.sendmail(gmail_user, to_email, msg.as_string())
-                print(f"V58 send_receipt_email: sent to {to_email} | attempt={attempt} | PDF={pdf_filename}")
-                last_error = None
-                break
-            except Exception as e:
-                last_error = e
-                print(f"V58 send_receipt_email: attempt {attempt} FAILED — {str(e)}")
-                if attempt < 3:
-                    time.sleep(5)
-
-        if last_error:
-            print(f"V58 send_receipt_email: all attempts FAILED — {str(last_error)}")
+        print(f"V23 send_receipt_email: sent to {to_email}")
 
     except Exception as e:
-        print(f"V58 send_receipt_email: FAILED — {str(e)}")
+        print(f"V23 send_receipt_email: FAILED — {str(e)}")
 
 
 # ═════════════════════════════════════════════
@@ -1095,7 +735,7 @@ def set_cell_bg(cell, hex_color):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V58"})
+    return jsonify({"status": "ok", "service": "artmidnet-mockup", "version": "V25"})
 
 
 @app.route("/mockup", methods=["POST"])
@@ -1237,12 +877,12 @@ def receipt():
         to_email = data.get("customerEmail")
         thread = threading.Thread(
             target=send_receipt_email,
-            args=(to_email, subject, html_body, data),
+            args=(to_email, subject, html_body),
             daemon=True
         )
         thread.start()
 
-        print(f"V28 /receipt: queued email to {to_email} | receipt={receipt_num} order={data.get('orderNumber')}")
+        print(f"V23 /receipt: queued email to {to_email} | receipt={receipt_num} order={data.get('orderNumber')}")
 
         return jsonify({
             "status": "ok",
